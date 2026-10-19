@@ -5,6 +5,90 @@ Newest session first.
 
 ---
 
+## 2026-10-20 — Deployment hardening and production runbook
+
+- Added `.dockerignore` so `apps/api/.env`, `apps/web/.env.local`, `infra/.env`,
+  build output, logs and archives can never be baked into images or shipped in
+  deploy tarballs.
+- `infra/Dockerfile.api` / `Dockerfile.web` now copy `pnpm-lock.yaml`, install
+  with `--frozen-lockfile --filter <app>...`, and pin pnpm 10.19.0. The web
+  build now receives `NEXT_PUBLIC_ROOT_DOMAIN` in addition to site/API/WS URLs.
+  `Dockerfile.ws` no longer hides `go mod download` failures.
+- `infra/docker-compose.yml`: web build args completed, API `ROOT_DOMAIN` aligned
+  with `ROOT_DOMAIN`, JWT TTLs/`REGISTRY_KEY` passed through, API/web
+  healthchecks added, and Docker log rotation (`10m`, 3 files) enabled on every
+  service.
+- `infra/.env.example`: production-safe defaults (`SITES` only the real host,
+  `ALLOW_SIGNUP=false`), added JWT TTLs, `REGISTRY_KEY`, `TWELVEDATA_SYMBOLS`
+  (correct `INTERNAL=EXTERNAL` format), `ZERODHA_SYMBOLS` and
+  `ZERODHA_REDIRECT`.
+- `.github/workflows/deploy.yml`: triggers on `master`, supports
+  `workflow_dispatch` with a one-time `bootstrap` seed, is gated by
+  `DEPLOY_ENABLED`, waits for Postgres before `db push`, no longer hides schema
+  failures, refuses to seed a non-empty database, uses `vars.PUBLIC_HOST`, and
+  runs HTTPS smoke tests. Deploy tarballs exclude all `.env` files.
+- `.github/workflows/ci.yml`: `master` branch + frozen-lockfile install.
+- Added `DEPLOY.md`: Droplet/DNS/firewall setup, production env, first deploy,
+  demo-account cleanup, auto-deploy enablement, backups/restore, schema-change
+  safety, troubleshooting and security checklist. README deployment section now
+  links to it.
+- Verified: `pnpm install --frozen-lockfile`, `pnpm typecheck` (5/5 packages),
+  engine tests (16/16), `docker compose config`, Caddy config validation, and
+  Docker builds of the API, web and WS images. The host-side Next build still
+  hits the known Windows symlink `EPERM` in `.next/standalone`; the Linux Docker
+  build succeeds.
+
+---
+
+## 2026-10-20 — Super-admin per-user P&L and full trade/order history
+
+- `GET /admin/users` now returns an aggregated `pnl` per user: **realized** (all
+  positions), **unrealized** (OPEN only), **brokerage** (ledger `COMMISSION`
+  debits), **net** (realized + unrealized − brokerage), plus trade and open-trade
+  counts. Balance and margin are summed across all non-house accounts instead of
+  only the first account.
+- Users tab adds **Net P&L** (colored, with realized/unrealized breakdown) and
+  **Trades** columns.
+- `GET /admin/users/:id/detail` now supports `tradeStatus`, `tradeTake` and
+  `orderTake`; returns **all** positions by default (paginated), order history,
+  `tradesTotal`/`ordersTotal`, unrealized/net P&L, wins/losses/win rate. Open
+  trade rows include the live mark.
+- Client drawer rebuilt: 9-stat summary, status-filtered trade history
+  (All/Closed/Liquidated/Open) with Load more + per-user CSV export, order
+  history (entries & limit orders), existing open positions and ledger.
+  Note: closes are positions, not `Order` rows, so they appear in trade history.
+- `/admin/trades.csv` accepts `userId` and includes `unrealized_pnl`.
+- Verified `pnpm --filter @realbulls/api typecheck` and
+  `pnpm --filter @realbulls/web typecheck`; local API returns
+  `admin@realbulls.io` net `2819.36` across 5 trades / 5 orders, filtered
+  pagination works, CSV export has 5 rows, and `/admin` returns 200.
+
+---
+
+## 2026-10-20 — Remove watchlist search category chips
+
+- Removed the `All / Stocks / Futures / Options / Forex / Crypto / Indices / Commodities`
+  chip row from `Watchlist.tsx`; the search bar now always queries all NFO/BFO
+  instruments (plus prefix-matched seeded assets), replacing the old "All" behaviour.
+- Deleted the now-unused `SEARCH_CATS`, `INSTRUMENT_TYPE_CATS`, `matchCat` and the
+  local category-browse `results` memo. Empty search returns no dropdown rows.
+- The advanced-mode filter row that filters *existing* watchlist items by
+  `assetClass` is unchanged.
+- Verified `pnpm --filter @realbulls/web typecheck`.
+
+---
+
+## 2026-10-20 — Remove account selector from the top bar
+
+- Removed the `DEMO · USD · xxxx` account `<select>` from `TopBar.tsx`. It only
+  changed client state while every trading REST route resolves
+  `primaryAccount(auth.sub)`, and each user has a single non-house account.
+- The active account is still set on session load and subscribed over the WS, so
+  balance/equity and P&L behave exactly as before.
+- Verified `pnpm --filter @realbulls/web typecheck`.
+
+---
+
 ## 2026-10-20 — GitHub repo preparation (docs, env templates, ignore rules)
 
 - **`.gitignore` expanded** — ignore all runtime env variants (`**/.env`,

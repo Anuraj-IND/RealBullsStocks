@@ -243,14 +243,15 @@ the result.
 | `BINANCE_SYMBOLS` | _(empty)_ | Crypto symbols to mirror |
 | `SYNTHETIC_ENABLED` | `true` | Generate GBM ticks without live feeds |
 | `TICK_THROTTLE_MS` | `250` | Synthetic publish cadence |
-| `TWELVEDATA_API_KEY` / `TWELVEDATA_POLL_MS` | _(empty)_ / `60000` | Forex/commodities |
-| `ZERODHA_API_KEY` / `ZERODHA_POLL_MS` | _(empty)_ / `30000` | Kite quotes |
+| `TWELVEDATA_API_KEY` / `TWELVEDATA_SYMBOLS` / `TWELVEDATA_POLL_MS` | _(empty)_ / defaults / `60000` | Forex/commodities (`INTERNAL=EXTERNAL` maps) |
+| `ZERODHA_API_KEY` / `ZERODHA_SYMBOLS` / `ZERODHA_POLL_MS` | _(empty)_ / defaults / `30000` | Kite quotes (`INTERNAL=EXTERNAL` maps) |
 
 ### `infra/.env` (see `infra/.env.example`)
 
-Consumed by `infra/docker-compose.yml`: `PUBLIC_HOST`, `SITES`,
-`CORS_ORIGINS`, `ROOT_DOMAIN`, `ACME_EMAIL`, `POSTGRES_PASSWORD`,
-`JWT_ACCESS_SECRET`, `JWT_REFRESH_SECRET`, feed symbols and optional provider keys.
+Consumed by `infra/docker-compose.yml`: `PUBLIC_HOST`, `SITES` (space-separated
+Caddy hosts), `CORS_ORIGINS` (comma-separated), `ROOT_DOMAIN`, `ACME_EMAIL`,
+`POSTGRES_PASSWORD`, `JWT_ACCESS_SECRET`, `JWT_REFRESH_SECRET`, JWT TTLs,
+`REGISTRY_KEY`, feed symbols and optional provider keys.
 
 ## Ports
 
@@ -276,26 +277,37 @@ there is no ESLint config committed yet.
 
 ## Deployment
 
-Production runs the same containers behind Caddy (automatic HTTPS):
+Production runs the same containers behind Caddy (automatic HTTPS) on a single
+DigitalOcean Droplet with self-hosted PostgreSQL and Redis.
+
+See **[DEPLOY.md](DEPLOY.md)** for the full runbook: Droplet and DNS setup,
+firewall, production environment, first deploy with database bootstrap, GitHub
+Actions secrets/variables, backups, rollback and troubleshooting.
+
+Quick summary:
 
 ```bash
 cp infra/.env.example infra/.env   # fill PUBLIC_HOST, SITES, secrets, provider keys
-docker compose -f infra/docker-compose.yml up -d --build
 ```
 
-`.github/workflows/deploy.yml` builds the three images, ships them to the server
-over SSH and restarts the stack. Required repository secrets:
+GitHub Actions builds the API, web and WebSocket images, ships them to the
+server over SSH and restarts the stack. Required repository secrets:
 
 | Secret | Purpose |
 | --- | --- |
 | `DEPLOY_HOST`, `DEPLOY_USER`, `DEPLOY_SSH_KEY` | SSH target for the deploy job |
-| `PUBLIC_HOST` | Hostname baked into the web image |
 
-`.github/workflows/ci.yml` runs install, Prisma client generation, typecheck,
-engine tests, Go build/vet and the web build on every push/PR to `main`.
+Required repository variables:
 
-> The deploy job runs `prisma db push --accept-data-loss` before restarting.
-> Review this against your schema before relying on it.
+| Variable | Purpose |
+| --- | --- |
+| `PUBLIC_HOST` | Hostname baked into the web image and used for smoke tests |
+| `DEPLOY_ENABLED` | Set to `true` after the first manual deploy to enable push-to-`master` deploys |
+
+The first deploy is manual: run **Actions → Deploy → Run workflow** with
+`bootstrap=true`. `.github/workflows/ci.yml` runs install, Prisma client
+generation, typecheck, engine tests, Go build/vet and the web build on every
+push/PR to `master`.
 
 ## Security checklist
 

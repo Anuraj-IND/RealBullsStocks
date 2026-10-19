@@ -1,0 +1,22 @@
+# Keep local secrets and irrelevant files out of Docker build contexts.
+.git
+.github
+docs
+brand
+**/node_modules
+**/.next
+**/.turbo
+**/dist
+**/coverage
+**/generated
+**/.env
+**/.env.*
+!**/.env.example
+!**/.env.*.example
+**/*.log
+**/*.tsbuildinfo
+**/*.tgz
+apps/ws-gateway/ws-gateway
+apps/ws-gateway/ws-gateway.exe
+apps/ws-gateway/gateway
+apps/ws-gateway/gateway.exe

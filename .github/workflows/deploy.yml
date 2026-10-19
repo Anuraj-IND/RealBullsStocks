@@ -2,8 +2,13 @@ name: Deploy
 
 on:
   workflow_dispatch:
+    inputs:
+      bootstrap:
+        description: "Seed a fresh database (run once on a new server)"
+        type: boolean
+        default: false
   push:
-    branches: [main]
+    branches: [master]
     paths-ignore:
       - "**/*.md"
 
@@ -13,9 +18,22 @@ concurrency:
 
 jobs:
   deploy:
+    # Auto-deploys stay disabled until the repository variable
+    # DEPLOY_ENABLED=true is set. Manual runs always work.
+    if: github.event_name == 'workflow_dispatch' || vars.DEPLOY_ENABLED == 'true'
     runs-on: ubuntu-latest
+    env:
+      PUBLIC_HOST: ${{ vars.PUBLIC_HOST }}
+      BOOTSTRAP: ${{ github.event_name == 'workflow_dispatch' && inputs.bootstrap || 'false' }}
     steps:
       - uses: actions/checkout@v4
+
+      - name: Validate configuration
+        run: |
+          if [ -z "${PUBLIC_HOST}" ]; then
+            echo "Repository variable PUBLIC_HOST is required (for example app.example.com)."
+            exit 1
+          fi
 
       - uses: docker/setup-buildx-action@v3
 
@@ -28,15 +46,24 @@ jobs:
       - name: Build web image
         run: |
           docker build -f infra/Dockerfile.web \
-            --build-arg NEXT_PUBLIC_SITE_URL=https://${{ secrets.PUBLIC_HOST }} \
+            --build-arg NEXT_PUBLIC_SITE_URL="https://${PUBLIC_HOST}" \
+            --build-arg NEXT_PUBLIC_ROOT_DOMAIN="${PUBLIC_HOST}" \
+            --build-arg NEXT_PUBLIC_API_URL="/api" \
+            --build-arg NEXT_PUBLIC_WS_URL="wss://${PUBLIC_HOST}/ws" \
             -t realbulls-web:latest .
 
       - name: Package
         run: |
           set -o pipefail
           docker save realbulls-api:latest realbulls-ws:latest realbulls-web:latest | gzip > images.tgz
-          tar --exclude=node_modules --exclude=.next --exclude=.turbo --exclude=generated --exclude=.git --exclude="*.tsbuildinfo" \
-            -czf src.tgz packages apps infra brand
+          tar \
+            --exclude=node_modules --exclude=.next --exclude=.turbo --exclude=generated \
+            --exclude=.git --exclude='*.tsbuildinfo' \
+            --exclude='.env' --exclude='.env.*' \
+            --exclude='*/.env' --exclude='*/.env.*' \
+            -czf src.tgz \
+            package.json pnpm-lock.yaml pnpm-workspace.yaml turbo.json tsconfig.base.json \
+            .dockerignore packages apps infra brand
           gzip -t images.tgz
           ls -lh images.tgz src.tgz
 
@@ -46,6 +73,9 @@ jobs:
           printf '%s\n' "${{ secrets.DEPLOY_SSH_KEY }}" > ~/.ssh/id
           chmod 600 ~/.ssh/id
           ssh-keyscan -H "${{ secrets.DEPLOY_HOST }}" >> ~/.ssh/known_hosts 2>/dev/null
+          ssh -i ~/.ssh/id -o StrictHostKeyChecking=no \
+            "${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }}" \
+            "mkdir -p /opt/realbulls"
 
       - name: Upload bundles
         run: |
@@ -56,7 +86,7 @@ jobs:
               images.tgz src.tgz ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }}:/opt/realbulls/; then
               if ssh -i ~/.ssh/id -o StrictHostKeyChecking=no \
                 ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} \
-                "gzip -t /opt/realbulls/images.tgz && ls -lh /opt/realbulls/images.tgz"; then
+                "gzip -t /opt/realbulls/images.tgz && gzip -t /opt/realbulls/src.tgz && ls -lh /opt/realbulls/images.tgz"; then
                 echo "upload verified on attempt $i"
                 exit 0
               fi
@@ -73,15 +103,28 @@ jobs:
         run: |
           ssh -i ~/.ssh/id -o StrictHostKeyChecking=no \
             -o ServerAliveInterval=20 -o ServerAliveCountMax=6 \
-            ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} '
-              set -e
+            ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} \
+            "BOOTSTRAP='${BOOTSTRAP}' PUBLIC_HOST='${PUBLIC_HOST}' bash -s" <<'REMOTE'
+              set -euo pipefail
+
+              : "${PUBLIC_HOST:?PUBLIC_HOST is required}"
               cd /opt/realbulls
+
+              if [ ! -f infra/.env ]; then
+                echo "Missing /opt/realbulls/infra/.env. Create it before deploying (see DEPLOY.md)."
+                exit 1
+              fi
+
               echo "disk before load:"; df -h / | tail -1
               gzip -t images.tgz
+              gzip -t src.tgz
+
               rm -rf /var/lib/containerd/io.containerd.content.v1.content/ingest/* 2>/dev/null || true
               docker builder prune -af >/dev/null 2>&1 || true
               docker image prune -f >/dev/null 2>&1 || true
+
               tar -xzf src.tgz && rm -f src.tgz
+
               if ! docker load -i images.tgz; then
                 echo "load failed (likely low disk) - recycling containers/images and retrying"
                 (cd infra && docker compose down --remove-orphans) || true
@@ -93,12 +136,64 @@ jobs:
               rm -f images.tgz
               echo "disk after load:"; df -h / | tail -1
               docker image prune -f >/dev/null 2>&1 || true
+
               cd infra
-              docker compose run --rm --no-deps -T api pnpm --filter @realbulls/db push --accept-data-loss || true
+              docker compose up -d postgres redis
+
+              ready=0
+              for i in $(seq 1 30); do
+                if docker compose exec -T postgres pg_isready -U realbulls -d realbulls >/dev/null 2>&1; then
+                  ready=1
+                  break
+                fi
+                sleep 2
+              done
+              if [ "${ready}" != "1" ]; then
+                echo "Postgres did not become ready."
+                docker compose logs --tail=100 postgres
+                exit 1
+              fi
+
+              # No --accept-data-loss here: destructive schema changes must be
+              # reviewed and applied manually.
+              docker compose run --rm --no-deps -T api pnpm --filter @realbulls/db push
+
+              if [ "${BOOTSTRAP}" = "true" ]; then
+                count=$(docker compose exec -T postgres psql -U realbulls -d realbulls -tAc 'SELECT count(*) FROM "User"' | tr -d '[:space:]')
+                if [ "${count}" != "0" ]; then
+                  echo "Refusing to seed: User table already has ${count} row(s)."
+                  exit 1
+                fi
+                echo "Bootstrapping fresh database..."
+                docker compose run --rm --no-deps -T api pnpm --filter @realbulls/db seed
+              fi
+
               docker compose up -d --no-build --remove-orphans
-              sleep 4
-              docker compose up -d --no-build
               docker compose ps --format "{{.Name}} {{.Status}}"
-              sleep 6
-              docker compose exec -T api pnpm --filter @realbulls/db push --accept-data-loss || true
-            '
+
+              echo "Waiting for https://${PUBLIC_HOST}/api/health ..."
+              ok=0
+              for i in $(seq 1 36); do
+                code=$(curl -s -o /dev/null -w '%{http_code}' "https://${PUBLIC_HOST}/api/health" || true)
+                if [ "${code}" = "200" ]; then
+                  ok=1
+                  break
+                fi
+                sleep 5
+              done
+              if [ "${ok}" != "1" ]; then
+                echo "API health check failed (last status: ${code:-none})."
+                docker compose ps
+                docker compose logs --tail=100 api web caddy
+                exit 1
+              fi
+
+              web_code=$(curl -s -o /dev/null -w '%{http_code}' "https://${PUBLIC_HOST}/" || true)
+              if [ "${web_code}" != "200" ]; then
+                echo "Web smoke test failed (status: ${web_code:-none})."
+                docker compose logs --tail=100 web caddy
+                exit 1
+              fi
+
+              echo "Deploy OK: https://${PUBLIC_HOST} (bootstrap=${BOOTSTRAP})"
+          REMOTE

@@ -16,6 +16,11 @@ services:
       interval: 5s
       timeout: 5s
       retries: 10
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
 
   redis:
     image: redis:7-alpine
@@ -29,6 +34,11 @@ services:
       interval: 5s
       timeout: 5s
       retries: 10
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
 
   api:
     build:
@@ -49,7 +59,10 @@ services:
       REDIS_URL: redis://redis:6379
       JWT_ACCESS_SECRET: ${JWT_ACCESS_SECRET:-change-me-access-secret-change-me}
       JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET:-change-me-refresh-secret-change-me}
-      ROOT_DOMAIN: ${PUBLIC_HOST:-localhost}
+      JWT_ACCESS_TTL: ${JWT_ACCESS_TTL:-900}
+      JWT_REFRESH_TTL: ${JWT_REFRESH_TTL:-1209600}
+      REGISTRY_KEY: ${REGISTRY_KEY:-realbulls:registry}
+      ROOT_DOMAIN: ${ROOT_DOMAIN:-app.example.com}
       CORS_ORIGINS: ${CORS_ORIGINS:-}
       PUBLIC_API_BASE: https://${PUBLIC_HOST:-localhost}/api
       PUBLIC_WEB_URL: https://${PUBLIC_HOST:-localhost}
@@ -65,6 +78,17 @@ services:
       PNL_TICK_MS: "1000"
     ports:
       - "127.0.0.1:4000:4000"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:4000/health >/dev/null || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 60s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
 
   ws-gateway:
     build:
@@ -79,8 +103,9 @@ services:
     environment:
       WS_PORT: "8080"
       REDIS_URL: redis://redis:6379
+      REGISTRY_KEY: ${REGISTRY_KEY:-realbulls:registry}
       BINANCE_SYMBOLS: ${BINANCE_SYMBOLS:-}
-      SYNTHETIC_ENABLED: "true"
+      SYNTHETIC_ENABLED: ${SYNTHETIC_ENABLED:-true}
       TICK_THROTTLE_MS: "250"
       TWELVEDATA_API_KEY: ${TWELVEDATA_API_KEY:-}
       TWELVEDATA_SYMBOLS: ${TWELVEDATA_SYMBOLS:-}
@@ -90,6 +115,11 @@ services:
       ZERODHA_POLL_MS: ${ZERODHA_POLL_MS:-30000}
     ports:
       - "127.0.0.1:8080:8080"
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
 
   web:
     build:
@@ -97,6 +127,9 @@ services:
       dockerfile: infra/Dockerfile.web
       args:
         NEXT_PUBLIC_SITE_URL: https://${PUBLIC_HOST:-localhost}
+        NEXT_PUBLIC_ROOT_DOMAIN: ${ROOT_DOMAIN:-app.example.com}
+        NEXT_PUBLIC_API_URL: /api
+        NEXT_PUBLIC_WS_URL: wss://${PUBLIC_HOST:-localhost}/ws
     image: realbulls-web:latest
     container_name: realbulls-web
     restart: unless-stopped
@@ -105,8 +138,20 @@ services:
       ROOT_DOMAIN: ${ROOT_DOMAIN:-app.example.com}
       API_INTERNAL_URL: http://api:4000
       NEXT_PUBLIC_SITE_URL: https://${PUBLIC_HOST:-localhost}
+      NEXT_PUBLIC_ROOT_DOMAIN: ${ROOT_DOMAIN:-app.example.com}
     ports:
       - "127.0.0.1:3000:3000"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:3000/ >/dev/null || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 60s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     depends_on:
       - api
 
@@ -128,6 +173,11 @@ services:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - realbulls-caddy-data:/data
       - realbulls-caddy-config:/config
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
 
 volumes:
   realbulls-pg:

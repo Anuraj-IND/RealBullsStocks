@@ -414,7 +414,7 @@ function UsersTab({
           <table className="w-full text-left text-sm">
             <thead className="text-[11px] uppercase tracking-wider text-muted">
               <tr>
-                {["User", "Role", "Status", "Balance", "Margin", "Last IP", "Actions", "Controls"].map((h) => (
+                {["User", "Role", "Status", "Balance", "Margin", "Net P&L", "Trades", "Last IP", "Actions", "Controls"].map((h) => (
                   <th key={h} className="border-b border-line px-3 py-2 font-medium">
                     {h}
                   </th>
@@ -438,8 +438,18 @@ function UsersTab({
                     <td className="px-3 py-2">
                       <Badge tone={u.status === "ACTIVE" ? "up" : "down"}>{u.status}</Badge>
                     </td>
-                    <td className="num px-3 py-2">{money.fmt(acct?.balance ?? 0)}</td>
-                    <td className="num px-3 py-2">{money.fmt(acct?.marginUsed ?? 0)}</td>
+                    <td className="num px-3 py-2">{money.fmt(u.balance)}</td>
+                    <td className="num px-3 py-2">{money.fmt(u.marginUsed)}</td>
+                    <td className="num px-3 py-2">
+                      <div className={cls("font-semibold", u.pnl.net >= 0 ? "text-up" : "text-down")}>{money.signed(u.pnl.net)}</div>
+                      <div className="text-[11px] text-muted">
+                        R {money.signed(u.pnl.realized)} · U {money.signed(u.pnl.unrealized)}
+                      </div>
+                    </td>
+                    <td className="num px-3 py-2">
+                      <div>{u.pnl.trades}</div>
+                      <div className="text-[11px] text-muted">{u.pnl.openTrades} open</div>
+                    </td>
                     <td className="num px-3 py-2 text-xs text-muted">{u.lastLoginIp ?? "—"}</td>
                     <td className="px-3 py-2">
                       <div className="flex gap-1">
@@ -1215,8 +1225,12 @@ function AuditTab() {
 }
 
 function ClientDrawer({ userId, onClose }: { userId: string; onClose: () => void }) {
-  const { data, isLoading } = useAdminUserDetail(userId);
+  const [tradeStatus, setTradeStatus] = useState("ALL");
+  const [tradeTake, setTradeTake] = useState(100);
+  const [orderTake, setOrderTake] = useState(100);
+  const { data, isLoading } = useAdminUserDetail(userId, { tradeStatus, tradeTake, orderTake });
   const money = useMoney();
+  const winRate = data?.stats.winRate;
   return (
     <div className="fixed inset-0 z-[75] flex justify-end bg-black/60" onClick={onClose}>
       <div className="flex h-full w-full max-w-3xl flex-col border-l border-line bg-navy" onClick={(e) => e.stopPropagation()}>
@@ -1235,12 +1249,19 @@ function ClientDrawer({ userId, onClose }: { userId: string; onClose: () => void
           {isLoading && <div className="text-muted">Loading…</div>}
           {data && (
             <>
-              <div className="grid grid-cols-2 gap-3 md:grid-cols-5">
+              <div className="grid grid-cols-2 gap-3 md:grid-cols-3">
                 <Stat label="Balance" value={money.fmt(data.stats.balance)} />
                 <Stat label="Margin used" value={money.fmt(data.stats.marginUsed)} tone="amber" />
                 <Stat label="Deposits" value={money.fmt(data.stats.deposits)} />
                 <Stat label="Realized P&L" value={money.signed(data.stats.realizedPnl)} tone={data.stats.realizedPnl >= 0 ? "up" : "down"} />
-                <Stat label="Brokerage" value={money.fmt(data.stats.commission)} />
+                <Stat label="Unrealized P&L" value={money.signed(data.stats.unrealizedPnl)} tone={data.stats.unrealizedPnl >= 0 ? "up" : "down"} />
+                <Stat label="Brokerage" value={money.fmt(data.stats.commission)} tone="amber" />
+                <Stat label="Net P&L" value={money.signed(data.stats.netPnl)} tone={data.stats.netPnl >= 0 ? "up" : "down"} />
+                <Stat label="Trades" value={`${data.stats.trades} (${data.stats.openTrades} open)`} />
+                <Stat
+                  label="Win rate"
+                  value={winRate === null || winRate === undefined ? "—" : `${Math.round(winRate * 100)}% · ${data.stats.wins}W/${data.stats.losses}L`}
+                />
               </div>
 
               <Card title="Leverage by segment">
@@ -1280,27 +1301,152 @@ function ClientDrawer({ userId, onClose }: { userId: string; onClose: () => void
                 </MiniTable>
               </Card>
 
-              <Card title="Recent trades">
-                <MiniTable head={["Closed", "Symbol", "Side", "Qty", "Entry", "Exit", "P&L"]}>
-                  {data.trades.map((t) => (
-                    <tr key={t.id} className="border-b border-line/60">
-                      <td className="num px-3 py-2 text-xs text-muted">{t.closedAt ? new Date(t.closedAt).toLocaleString() : "—"}</td>
-                      <td className="num px-3 py-2 font-semibold">{t.symbol}</td>
-                      <td className={cls("px-3 py-2", t.side === "BUY" ? "text-up" : "text-down")}>{t.side}</td>
-                      <td className="num px-3 py-2">{t.qty}</td>
-                      <td className="num px-3 py-2">{fmtPrice(t.entry)}</td>
-                      <td className="num px-3 py-2">{fmtPrice(t.exit)}</td>
-                      <td className={cls("num px-3 py-2 font-semibold", t.realizedPnl >= 0 ? "text-up" : "text-down")}>{money.signed(t.realizedPnl)}</td>
-                    </tr>
-                  ))}
+              <Card
+                title={`Trade history (${data.trades.length} of ${data.tradesTotal})`}
+                action={
+                  <div className="flex items-center gap-2">
+                    <div className="flex gap-1">
+                      {[
+                        ["ALL", "All"],
+                        ["CLOSED", "Closed"],
+                        ["LIQUIDATED", "Liquidated"],
+                        ["OPEN", "Open"],
+                      ].map(([value, label]) => (
+                        <button
+                          key={value}
+                          onClick={() => {
+                            setTradeStatus(value);
+                            setTradeTake(100);
+                          }}
+                          className={cls("chip", tradeStatus === value && "chip-active")}
+                        >
+                          {label}
+                        </button>
+                      ))}
+                    </div>
+                    <button
+                      className="btn-ghost py-1 text-xs"
+                      onClick={() =>
+                        void downloadCsv(
+                          `/admin/trades.csv?userId=${userId}&status=${tradeStatus}`,
+                          `realbulls-trades-${data.user.username ?? userId}-${tradeStatus.toLowerCase()}.csv`,
+                        )
+                      }
+                    >
+                      Export CSV
+                    </button>
+                  </div>
+                }
+              >
+                <MiniTable head={["Opened", "Symbol", "Side", "Qty", "Lev", "Entry", "Exit / Mark", "Margin", "P&L", "Status"]}>
+                  {data.trades.map((t) => {
+                    const pnl = t.status === "OPEN" ? t.unrealizedPnl : t.realizedPnl;
+                    return (
+                      <tr key={t.id} className="border-b border-line/60">
+                        <td className="num px-3 py-2 text-xs text-muted">{new Date(t.openedAt).toLocaleString()}</td>
+                        <td className="num px-3 py-2 font-semibold">{t.symbol}</td>
+                        <td className={cls("px-3 py-2", t.side === "BUY" ? "text-up" : "text-down")}>{t.side}</td>
+                        <td className="num px-3 py-2">{t.qty}</td>
+                        <td className="num px-3 py-2">1:{t.leverage}</td>
+                        <td className="num px-3 py-2">{fmtPrice(t.entry)}</td>
+                        <td className="num px-3 py-2">{fmtPrice(t.exit ?? t.mark)}</td>
+                        <td className="num px-3 py-2">{money.fmt(t.marginUsed)}</td>
+                        <td className={cls("num px-3 py-2 font-semibold", pnl >= 0 ? "text-up" : "text-down")}>{money.signed(pnl)}</td>
+                        <td className="px-3 py-2">
+                          <Badge tone={t.status === "OPEN" ? "amber" : t.status === "LIQUIDATED" ? "down" : "neutral"}>{t.status}</Badge>
+                        </td>
+                      </tr>
+                    );
+                  })}
                   {data.trades.length === 0 && (
                     <tr>
-                      <td colSpan={7} className="py-6 text-center text-sm text-muted">
-                        No closed trades
+                      <td colSpan={10} className="py-6 text-center text-sm text-muted">
+                        No trades
                       </td>
                     </tr>
                   )}
                 </MiniTable>
+                {data.trades.length < data.tradesTotal && (
+                  <div className="flex flex-wrap items-center justify-center gap-2 pt-2">
+                    {tradeTake < 5000 && (
+                      <button className="btn-ghost py-1 text-xs" onClick={() => setTradeTake((n) => Math.min(n + 100, 5000))}>
+                        Load more
+                      </button>
+                    )}
+                    {data.tradesTotal <= 5000 && (
+                      <button className="btn-ghost py-1 text-xs" onClick={() => setTradeTake(data.tradesTotal)}>
+                        Load all
+                      </button>
+                    )}
+                    {data.tradesTotal > 5000 && (
+                      <span className="text-[11px] text-muted">Showing first 5000 — use Export CSV for the full history.</span>
+                    )}
+                  </div>
+                )}
+              </Card>
+
+              <Card
+                title={`Order history (${data.orders.length} of ${data.ordersTotal})`}
+                action={
+                  <span className="text-[11px] text-muted">Entries & limit orders; closes are in trade history</span>
+                }
+              >
+                <MiniTable head={["Time", "Symbol", "Side", "Type", "Qty", "Price", "Filled", "Lev", "Status", "Position"]}>
+                  {data.orders.map((o) => (
+                    <tr key={o.id} className="border-b border-line/60">
+                      <td className="num px-3 py-2 text-xs text-muted">{new Date(o.createdAt).toLocaleString()}</td>
+                      <td className="num px-3 py-2 font-semibold">{o.symbol}</td>
+                      <td className={cls("px-3 py-2", o.side === "BUY" ? "text-up" : "text-down")}>{o.side}</td>
+                      <td className="px-3 py-2 text-xs">{o.type}</td>
+                      <td className="num px-3 py-2">{o.qty}</td>
+                      <td className="num px-3 py-2">{fmtPrice(o.price ?? o.filledPrice)}</td>
+                      <td className="num px-3 py-2 text-xs">
+                        {o.filledQty > 0 ? `${o.filledQty} @ ${fmtPrice(o.filledPrice)}` : "—"}
+                      </td>
+                      <td className="num px-3 py-2">1:{o.leverage}</td>
+                      <td className="px-3 py-2">
+                        <Badge
+                          tone={
+                            o.status === "FILLED"
+                              ? "up"
+                              : o.status === "REJECTED"
+                                ? "down"
+                                : o.status === "PENDING" || o.status === "PARTIAL"
+                                  ? "amber"
+                                  : "neutral"
+                          }
+                        >
+                          {o.status}
+                        </Badge>
+                      </td>
+                      <td className="num px-3 py-2 text-xs text-muted">{o.positionId ? o.positionId.slice(0, 8) : "—"}</td>
+                    </tr>
+                  ))}
+                  {data.orders.length === 0 && (
+                    <tr>
+                      <td colSpan={10} className="py-6 text-center text-sm text-muted">
+                        No orders
+                      </td>
+                    </tr>
+                  )}
+                </MiniTable>
+                {data.orders.length < data.ordersTotal && (
+                  <div className="flex flex-wrap items-center justify-center gap-2 pt-2">
+                    {orderTake < 5000 && (
+                      <button className="btn-ghost py-1 text-xs" onClick={() => setOrderTake((n) => Math.min(n + 100, 5000))}>
+                        Load more
+                      </button>
+                    )}
+                    {data.ordersTotal <= 5000 && (
+                      <button className="btn-ghost py-1 text-xs" onClick={() => setOrderTake(data.ordersTotal)}>
+                        Load all
+                      </button>
+                    )}
+                    {data.ordersTotal > 5000 && (
+                      <span className="text-[11px] text-muted">Showing first 5000 orders.</span>
+                    )}
+                  </div>
+                )}
               </Card>
 
               <Card title="Recent ledger">

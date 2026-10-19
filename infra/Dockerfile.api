@@ -1,11 +1,16 @@
 FROM node:20-alpine
 RUN apk add --no-cache openssl
-RUN corepack enable
+RUN corepack enable && corepack prepare pnpm@10.19.0 --activate
 WORKDIR /repo
-COPY pnpm-workspace.yaml package.json turbo.json tsconfig.base.json ./
+COPY pnpm-workspace.yaml package.json pnpm-lock.yaml turbo.json tsconfig.base.json ./
+COPY apps/api/package.json ./apps/api/package.json
+COPY apps/web/package.json ./apps/web/package.json
+COPY packages/db/package.json ./packages/db/package.json
+COPY packages/engine/package.json ./packages/engine/package.json
+COPY packages/shared/package.json ./packages/shared/package.json
+RUN pnpm install --frozen-lockfile --filter @realbulls/api...
 COPY packages ./packages
 COPY apps/api ./apps/api
-RUN pnpm install --no-frozen-lockfile
 RUN pnpm --filter @realbulls/db generate
 ENV NODE_ENV=production
 EXPOSE 4000

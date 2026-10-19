@@ -13,7 +13,7 @@ import { ws } from "@/lib/ws";
 import { hasStoredSession, getRefreshToken, apiPost } from "@/lib/api";
 
 export function TopBar() {
-  const { user, accounts, activeAccountId, setActiveAccount, clear } = useAuthStore();
+  const { user, activeAccountId, clear } = useAuthStore();
   const connected = useConnectionStore((s) => s.connected);
   const currency = useUiStore((s) => s.currency);
   const setCurrency = useUiStore((s) => s.setCurrency);
@@ -77,23 +77,6 @@ export function TopBar() {
             </button>
           </div>
           <NotificationsBell />
-
-          {accounts.length > 0 && (
-            <select
-              className="input hidden w-40 py-1.5 text-xs sm:block"
-              value={activeAccountId ?? ""}
-              onChange={(e) => {
-                setActiveAccount(e.target.value);
-                ws.subscribeAccount(e.target.value);
-              }}
-            >
-              {accounts.map((a) => (
-                <option key={a.id} value={a.id}>
-                  {a.type} · {a.baseCurrency} · {a.id.slice(-4)}
-                </option>
-              ))}
-            </select>
-          )}
 
           <span className={cls("hidden h-2 w-2 md:block", connected ? "bg-lime animate-pulseDot" : "bg-brandbright")} title={connected ? t("top.live") : t("top.connecting")} />
 

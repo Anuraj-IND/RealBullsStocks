@@ -20,6 +20,9 @@ export interface AdminUser {
   brokerage: number | null;
   brokeragePerOrder: number | null;
   allowedSegments: string[];
+  balance: number;
+  marginUsed: number;
+  pnl: { realized: number; unrealized: number; commission: number; net: number; trades: number; openTrades: number };
   accounts: Array<{ id: string; type: string; balance: number; marginUsed: number; status: string }>;
 }
 
@@ -268,7 +271,20 @@ export interface ClientDetail {
   };
   accounts: Array<{ id: string; type: string; balance: number; marginUsed: number; status: string }>;
   segments: Record<string, number>;
-  stats: { balance: number; marginUsed: number; deposits: number; realizedPnl: number; commission: number };
+  stats: {
+    balance: number;
+    marginUsed: number;
+    deposits: number;
+    realizedPnl: number;
+    unrealizedPnl: number;
+    commission: number;
+    netPnl: number;
+    trades: number;
+    openTrades: number;
+    wins: number;
+    losses: number;
+    winRate: number | null;
+  };
   openPositions: Array<{
     id: string;
     symbol: string;
@@ -280,27 +296,59 @@ export interface ClientDetail {
     unrealizedPnl: number;
     liquidationPrice: number | null;
   }>;
+  tradesTotal: number;
   trades: Array<{
     id: string;
     symbol: string;
+    assetClass: string;
     side: string;
     qty: number;
+    leverage: number;
     entry: number;
     exit: number | null;
+    mark: number | null;
     marginUsed: number;
     commission: number;
     realizedPnl: number;
+    unrealizedPnl: number;
     status: string;
+    openedAt: string;
     closedAt: string | null;
+  }>;
+  ordersTotal: number;
+  orders: Array<{
+    id: string;
+    symbol: string;
+    assetClass: string;
+    side: string;
+    type: string;
+    qty: number;
+    price: number | null;
+    filledPrice: number | null;
+    filledQty: number;
+    leverage: number;
+    status: string;
+    positionId: string | null;
+    createdAt: string;
+    filledAt: string | null;
   }>;
   ledger: Array<{ id: string; type: string; direction: string; amount: number; balanceAfter: number; memo: string | null; createdAt: string }>;
 }
 
-export function useAdminUserDetail(id: string | null) {
+export function useAdminUserDetail(
+  id: string | null,
+  params?: { tradeStatus?: string; tradeTake?: number; orderTake?: number },
+) {
+  const tradeStatus = params?.tradeStatus ?? "ALL";
+  const tradeTake = params?.tradeTake ?? 100;
+  const orderTake = params?.orderTake ?? 100;
   return useQuery({
-    queryKey: ["admin", "user", id],
+    queryKey: ["admin", "user", id, tradeStatus, tradeTake, orderTake],
     enabled: Boolean(id),
-    queryFn: () => apiGet<ClientDetail>(`/admin/users/${id}/detail`),
+    queryFn: () =>
+      apiGet<ClientDetail>(
+        `/admin/users/${id}/detail?tradeStatus=${encodeURIComponent(tradeStatus)}&tradeTake=${tradeTake}&orderTake=${orderTake}`,
+      ),
     refetchInterval: 5000,
   });
 }

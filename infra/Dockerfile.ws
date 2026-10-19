@@ -1,7 +1,7 @@
 FROM golang:1.23-alpine AS build
 WORKDIR /src
 COPY apps/ws-gateway/go.mod apps/ws-gateway/go.sum* ./
-RUN go mod download || true
+RUN go mod download
 COPY apps/ws-gateway ./
 RUN CGO_ENABLED=0 GOOS=linux go build -o /out/ws-gateway ./cmd/gateway
 

@@ -19,39 +19,6 @@ import { apiPost, ApiError } from "@/lib/api";
 import { useQueryClient } from "@tanstack/react-query";
 
 const PRESETS = ["Equity", "Futures", "Options", "Commodities", "Crypto", "Forex"];
-const SEARCH_CATS = [
-  { id: "ALL", label: "All" },
-  { id: "STOCK", label: "Stocks" },
-  { id: "FUTURES", label: "Futures" },
-  { id: "OPTIONS", label: "Options" },
-  { id: "FOREX", label: "Forex" },
-  { id: "CRYPTO", label: "Crypto" },
-  { id: "INDEX", label: "Indices" },
-  { id: "COMMODITY", label: "Commodities" },
-] as const;
-
-function matchCat(a: { assetClass: string; segment?: string }, cat: string): boolean {
-  const seg = a.segment ?? "";
-  switch (cat) {
-    case "STOCK":
-      return a.assetClass === "STOCK" && !seg.includes("FUTURES") && !seg.includes("OPTIONS");
-    case "FUTURES":
-      return seg.includes("FUTURES");
-    case "OPTIONS":
-      return seg.includes("OPTIONS");
-    case "FOREX":
-      return a.assetClass === "FOREX";
-    case "CRYPTO":
-      return a.assetClass === "CRYPTO";
-    case "INDEX":
-      return a.assetClass === "INDEX" && !seg.includes("FUTURES") && !seg.includes("OPTIONS");
-    case "COMMODITY":
-      return a.assetClass === "COMMODITY";
-    default:
-      return true;
-  }
-}
-const INSTRUMENT_TYPE_CATS: Record<string, string> = { ALL: "", FUTURES: "FUT", OPTIONS: "CE,PE" };
 
 function assetKindRank(segment?: string): number {
   const s = (segment ?? "").toUpperCase();
@@ -90,7 +57,6 @@ export function Watchlist() {
   const [query, setQuery] = useState("");
   const [debouncedQuery, setDebouncedQuery] = useState("");
   const [category, setCategory] = useState<(typeof CATEGORIES)[number]["id"]>("ALL");
-  const [searchCat, setSearchCat] = useState<string>("ALL");
   const [activeId, setActiveId] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
   const [newName, setNewName] = useState("");
@@ -110,10 +76,8 @@ export function Watchlist() {
     return () => clearTimeout(t);
   }, [query]);
 
-  const instrumentCat = Object.prototype.hasOwnProperty.call(INSTRUMENT_TYPE_CATS, searchCat);
-  const instrumentTypeFilter = instrumentCat ? INSTRUMENT_TYPE_CATS[searchCat] : "";
-  const searchEnabled = instrumentCat && debouncedQuery.trim().length >= 1;
-  const instrumentSearch = useInstrumentSearch(debouncedQuery, { type: instrumentTypeFilter, enabled: searchEnabled });
+  const searchEnabled = debouncedQuery.trim().length >= 1;
+  const instrumentSearch = useInstrumentSearch(debouncedQuery, { enabled: searchEnabled });
   const instrumentResults = searchEnabled ? instrumentSearch.data?.instruments ?? [] : [];
 
   const activeSymbol = useUiStore((s) => s.activeSymbol);
@@ -197,23 +161,6 @@ export function Watchlist() {
     };
   }, [symbolKey]);
 
-  const results = useMemo(() => {
-    if (!assetsQuery.data) return [];
-    const held = new Set(items.map((i) => i.assetId));
-    const q = query.trim().toLowerCase();
-    return assetsQuery.data.assets
-      .filter((a) => !held.has(a.id) && matchCat(a, searchCat))
-      .filter((a) =>
-        q
-          ? a.symbol.toLowerCase().includes(q) ||
-            a.name.toLowerCase().includes(q) ||
-            a.assetClass.toLowerCase().includes(q) ||
-            (a.segment ?? "").toLowerCase().includes(q)
-          : searchCat !== "ALL",
-      )
-      .slice(0, 12);
-  }, [query, assetsQuery.data, items, searchCat]);
-
   const ql = debouncedQuery.trim().toLowerCase();
   const symbolPrefix = (a: { symbol: string }) => (a.symbol.toLowerCase().startsWith(ql) ? 0 : 1);
   const localExtras = searchEnabled
@@ -223,23 +170,17 @@ export function Watchlist() {
         .filter((a) => !instrumentResults.some((r) => r.tradingsymbol === a.symbol))
         .sort((a, b) => symbolPrefix(a) - symbolPrefix(b))
         .slice(0, 5)
-    : results;
-  const showResults = searchEnabled
-    ? instrumentResults.length > 0 || localExtras.length > 0
-    : results.length > 0;
+    : [];
+  const showResults = searchEnabled && (instrumentResults.length > 0 || localExtras.length > 0);
 
-  const searchRows = (
-    searchEnabled
-      ? [
-          ...localExtras.map((asset) => ({ kind: "asset" as const, asset, rank: assetKindRank(asset.segment) })),
-          ...instrumentResults.map((instrument) => ({
-            kind: "instrument" as const,
-            instrument,
-            rank: instrument.instrumentType === "FUT" ? 1 : 2,
-          })),
-        ]
-      : results.map((asset) => ({ kind: "asset" as const, asset, rank: assetKindRank(asset.segment) }))
-  ).sort((x, y) => x.rank - y.rank);
+  const searchRows = [
+    ...localExtras.map((asset) => ({ kind: "asset" as const, asset, rank: assetKindRank(asset.segment) })),
+    ...instrumentResults.map((instrument) => ({
+      kind: "instrument" as const,
+      instrument,
+      rank: instrument.instrumentType === "FUT" ? 1 : 2,
+    })),
+  ].sort((x, y) => x.rank - y.rank);
 
   const filtered = items.filter((i) => category === "ALL" || i.assetClass === category);
 
@@ -357,14 +298,6 @@ export function Watchlist() {
               </button>
             </div>
           )}
-        </div>
-
-        <div className="flex flex-wrap gap-1">
-          {SEARCH_CATS.map((c) => (
-            <button key={c.id} onClick={() => setSearchCat(c.id)} className={cls("chip", searchCat === c.id && "chip-active")}>
-              {c.label}
-            </button>
-          ))}
         </div>
 
         {searchEnabled && instrumentSearch.isLoading && instrumentResults.length === 0 && (

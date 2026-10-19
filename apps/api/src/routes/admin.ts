@@ -79,29 +79,93 @@ export default async function adminRoutes(app: FastifyInstance) {
       take: 200,
     });
     const segMap = await segmentMapFor(users.map((u) => u.id));
+
+    const accountIds = users.flatMap((u) => u.accounts.map((a) => a.id));
+    const [positionAgg, commissionAgg] = await Promise.all([
+      prisma.position.groupBy({
+        by: ["accountId", "status"],
+        where: { accountId: { in: accountIds } },
+        _sum: { realizedPnl: true, unrealizedPnl: true },
+        _count: { _all: true },
+      }),
+      prisma.ledgerEntry.groupBy({
+        by: ["accountId"],
+        where: { accountId: { in: accountIds }, type: "COMMISSION", direction: "DEBIT" },
+        _sum: { amount: true },
+      }),
+    ]);
+
+    type PnlAcc = { realized: number; unrealized: number; commission: number; trades: number; openTrades: number };
+    const pnlByAccount = new Map<string, PnlAcc>();
+    const accFor = (accountId: string): PnlAcc => {
+      let acc = pnlByAccount.get(accountId);
+      if (!acc) {
+        acc = { realized: 0, unrealized: 0, commission: 0, trades: 0, openTrades: 0 };
+        pnlByAccount.set(accountId, acc);
+      }
+      return acc;
+    };
+    for (const row of positionAgg) {
+      const acc = accFor(row.accountId);
+      acc.realized += D.num(row._sum.realizedPnl);
+      acc.trades += row._count._all;
+      if (row.status === "OPEN") {
+        acc.unrealized += D.num(row._sum.unrealizedPnl);
+        acc.openTrades += row._count._all;
+      }
+    }
+    for (const row of commissionAgg) accFor(row.accountId).commission += D.num(row._sum.amount);
+
     return {
-      users: users.map((u) => ({
-        id: u.id,
-        tenantId: u.tenantId,
-        email: u.email,
-        username: u.username,
-        role: u.role,
-        status: u.status,
-        displayName: u.displayName,
-        lastLoginIp: u.lastLoginIp,
-        lastLoginAt: u.lastLoginAt?.toISOString() ?? null,
-        segments: segMap.get(u.id) ?? {},
-        brokerage: u.commissionPerLotOverride != null ? D.num(u.commissionPerLotOverride) : null,
-        brokeragePerOrder: u.commissionPerOrderOverride != null ? D.num(u.commissionPerOrderOverride) : null,
-        allowedSegments: u.allowedSegments,
-        accounts: u.accounts.map((a) => ({
-          id: a.id,
-          type: a.type,
-          balance: D.num(a.balance),
-          marginUsed: D.num(a.marginUsed),
-          status: a.status,
-        })),
-      })),
+      users: users.map((u) => {
+        const pnl = { realized: 0, unrealized: 0, commission: 0, net: 0, trades: 0, openTrades: 0 };
+        let balance = 0;
+        let marginUsed = 0;
+        for (const a of u.accounts) {
+          balance += D.num(a.balance);
+          marginUsed += D.num(a.marginUsed);
+          const acc = pnlByAccount.get(a.id);
+          if (!acc) continue;
+          pnl.realized += acc.realized;
+          pnl.unrealized += acc.unrealized;
+          pnl.commission += acc.commission;
+          pnl.trades += acc.trades;
+          pnl.openTrades += acc.openTrades;
+        }
+        pnl.net = pnl.realized + pnl.unrealized - pnl.commission;
+        return {
+          id: u.id,
+          tenantId: u.tenantId,
+          email: u.email,
+          username: u.username,
+          role: u.role,
+          status: u.status,
+          displayName: u.displayName,
+          lastLoginIp: u.lastLoginIp,
+          lastLoginAt: u.lastLoginAt?.toISOString() ?? null,
+          segments: segMap.get(u.id) ?? {},
+          brokerage: u.commissionPerLotOverride != null ? D.num(u.commissionPerLotOverride) : null,
+          brokeragePerOrder: u.commissionPerOrderOverride != null ? D.num(u.commissionPerOrderOverride) : null,
+          allowedSegments: u.allowedSegments,
+          balance: D.toMoney(balance),
+          marginUsed: D.toMoney(marginUsed),
+          pnl: {
+            realized: D.toMoney(pnl.realized),
+            unrealized: D.toMoney(pnl.unrealized),
+            commission: D.toMoney(pnl.commission),
+            net: D.toMoney(pnl.net),
+            trades: pnl.trades,
+            openTrades: pnl.openTrades,
+          },
+          accounts: u.accounts.map((a) => ({
+            id: a.id,
+            type: a.type,
+            balance: D.num(a.balance),
+            marginUsed: D.num(a.marginUsed),
+            status: a.status,
+          })),
+        };
+      }),
     };
   });
 
@@ -254,7 +318,13 @@ export default async function adminRoutes(app: FastifyInstance) {
     const tenantId = tenantScope(request, query.tenantId);
     const take = Math.min(Number(query.take ?? 200), 500);
     const statuses =
-      query.status === "OPEN" ? ["OPEN"] : query.status === "ALL" ? ["OPEN", "CLOSED", "LIQUIDATED"] : ["CLOSED", "LIQUIDATED"];
+      query.status === "OPEN"
+        ? ["OPEN"]
+        : query.status === "LIQUIDATED"
+          ? ["LIQUIDATED"]
+          : query.status === "ALL"
+            ? ["OPEN", "CLOSED", "LIQUIDATED"]
+            : ["CLOSED", "LIQUIDATED"];
 
     const trades = await prisma.position.findMany({
       where: {
@@ -360,18 +430,58 @@ export default async function adminRoutes(app: FastifyInstance) {
 
   app.get("/admin/users/:id/detail", async (request) => {
     const { id } = request.params as { id: string };
+    const query = request.query as { tradeStatus?: string; tradeTake?: string; orderTake?: string };
     const user = await prisma.user.findUnique({ where: { id }, include: { accounts: { where: { isHouse: false } } } });
     if (!user || user.displayName === "HOUSE") throw notFound("User not found");
     tenantScope(request, user.tenantId);
 
     const accountIds = user.accounts.map((a) => a.id);
-    const [openPositions, trades, ledger, depositsAgg, realizedAgg, commissionAgg, overrides] = await Promise.all([
+    const statuses =
+      query.tradeStatus === "OPEN"
+        ? ["OPEN"]
+        : query.tradeStatus === "CLOSED"
+          ? ["CLOSED", "LIQUIDATED"]
+          : query.tradeStatus === "LIQUIDATED"
+            ? ["LIQUIDATED"]
+            : ["OPEN", "CLOSED", "LIQUIDATED"];
+    const takeOf = (value: string | undefined) => {
+      const parsed = Number(value ?? 100);
+      return Number.isFinite(parsed) && parsed > 0 ? Math.min(Math.floor(parsed), 5000) : 100;
+    };
+    const tradeTake = takeOf(query.tradeTake);
+    const orderTake = takeOf(query.orderTake);
+    const tradeWhere = { accountId: { in: accountIds }, status: { in: statuses as never } };
+
+    const [
+      openPositions,
+      trades,
+      tradesTotal,
+      orders,
+      ordersTotal,
+      ledger,
+      depositsAgg,
+      commissionAgg,
+      positionStats,
+      wins,
+      losses,
+      overrides,
+    ] = await Promise.all([
       prisma.position.findMany({ where: { accountId: { in: accountIds }, status: "OPEN" }, include: { asset: true }, orderBy: { openedAt: "desc" } }),
-      prisma.position.findMany({ where: { accountId: { in: accountIds }, status: { in: ["CLOSED", "LIQUIDATED"] } }, include: { asset: true }, orderBy: { closedAt: "desc" }, take: 25 }),
+      prisma.position.findMany({ where: tradeWhere, include: { asset: true }, orderBy: { openedAt: "desc" }, take: tradeTake }),
+      prisma.position.count({ where: tradeWhere }),
+      prisma.order.findMany({ where: { accountId: { in: accountIds } }, include: { asset: true }, orderBy: { createdAt: "desc" }, take: orderTake }),
+      prisma.order.count({ where: { accountId: { in: accountIds } } }),
       prisma.ledgerEntry.findMany({ where: { accountId: { in: accountIds }, account: { isHouse: false } }, orderBy: { createdAt: "desc" }, take: 25 }),
       prisma.ledgerEntry.aggregate({ where: { accountId: { in: accountIds }, type: "DEPOSIT", direction: "CREDIT" }, _sum: { amount: true } }),
-      prisma.position.aggregate({ where: { accountId: { in: accountIds }, status: { in: ["CLOSED", "LIQUIDATED"] } }, _sum: { realizedPnl: true } }),
       prisma.ledgerEntry.aggregate({ where: { accountId: { in: accountIds }, type: "COMMISSION", direction: "DEBIT" }, _sum: { amount: true } }),
+      prisma.position.groupBy({
+        by: ["status"],
+        where: { accountId: { in: accountIds } },
+        _sum: { realizedPnl: true, unrealizedPnl: true },
+        _count: { _all: true },
+      }),
+      prisma.position.count({ where: { accountId: { in: accountIds }, status: { in: ["CLOSED", "LIQUIDATED"] }, realizedPnl: { gt: 0 } } }),
+      prisma.position.count({ where: { accountId: { in: accountIds }, status: { in: ["CLOSED", "LIQUIDATED"] }, realizedPnl: { lt: 0 } } }),
       prisma.userLeverageOverride.findMany({ where: { userId: id, assetId: null, assetClass: null, segment: { not: null } } }),
     ]);
 
@@ -393,7 +503,18 @@ export default async function adminRoutes(app: FastifyInstance) {
         liquidationPrice: p.liquidationPrice ? D.num(p.liquidationPrice) : null,
       });
     }
+    const marks = new Map(open.map((p) => [p.id, p.mark]));
 
+    const totals = { realized: 0, unrealized: 0, trades: 0, openTrades: 0 };
+    for (const row of positionStats) {
+      totals.realized += D.num(row._sum.realizedPnl);
+      totals.trades += row._count._all;
+      if (row.status === "OPEN") {
+        totals.unrealized += D.num(row._sum.unrealizedPnl);
+        totals.openTrades += row._count._all;
+      }
+    }
+    const commission = D.num(commissionAgg._sum.amount);
     const balance = user.accounts.reduce((a, c) => a + D.num(c.balance), 0);
     const marginUsed = user.accounts.reduce((a, c) => a + D.num(c.marginUsed), 0);
 
@@ -414,14 +535,52 @@ export default async function adminRoutes(app: FastifyInstance) {
         balance: D.toMoney(balance),
         marginUsed: D.toMoney(marginUsed),
         deposits: D.num(depositsAgg._sum.amount),
-        realizedPnl: D.num(realizedAgg._sum.realizedPnl),
-        commission: D.num(commissionAgg._sum.amount),
+        realizedPnl: D.toMoney(totals.realized),
+        unrealizedPnl: D.toMoney(totals.unrealized),
+        commission: D.toMoney(commission),
+        netPnl: D.toMoney(totals.realized + totals.unrealized - commission),
+        trades: totals.trades,
+        openTrades: totals.openTrades,
+        wins,
+        losses,
+        winRate: wins + losses > 0 ? wins / (wins + losses) : null,
       },
       openPositions: open,
+      tradesTotal,
       trades: trades.map((p) => ({
-        id: p.id, symbol: p.asset.symbol, side: p.side, qty: D.num(p.qty), entry: D.num(p.avgEntryPrice),
-        exit: p.closedPrice ? D.num(p.closedPrice) : null, marginUsed: D.num(p.marginUsed), commission: D.num(p.commission),
-        realizedPnl: D.num(p.realizedPnl), status: p.status, closedAt: p.closedAt?.toISOString() ?? null,
+        id: p.id,
+        symbol: p.asset.symbol,
+        assetClass: p.asset.assetClass,
+        side: p.side,
+        qty: D.num(p.qty),
+        leverage: p.leverage,
+        entry: D.num(p.avgEntryPrice),
+        exit: p.closedPrice ? D.num(p.closedPrice) : null,
+        mark: p.status === "OPEN" ? (marks.get(p.id) ?? null) : null,
+        marginUsed: D.num(p.marginUsed),
+        commission: D.num(p.commission),
+        realizedPnl: D.num(p.realizedPnl),
+        unrealizedPnl: D.num(p.unrealizedPnl),
+        status: p.status,
+        openedAt: p.openedAt.toISOString(),
+        closedAt: p.closedAt?.toISOString() ?? null,
+      })),
+      ordersTotal,
+      orders: orders.map((o) => ({
+        id: o.id,
+        symbol: o.asset.symbol,
+        assetClass: o.asset.assetClass,
+        side: o.side,
+        type: o.type,
+        qty: D.num(o.qty),
+        price: o.price ? D.num(o.price) : null,
+        filledPrice: o.filledPrice ? D.num(o.filledPrice) : null,
+        filledQty: D.num(o.filledQty),
+        leverage: o.leverage,
+        status: o.status,
+        positionId: o.positionId,
+        createdAt: o.createdAt.toISOString(),
+        filledAt: o.filledAt?.toISOString() ?? null,
       })),
       ledger: ledger.map((e) => ({ id: e.id, type: e.type, direction: e.direction, amount: D.num(e.amount), balanceAfter: D.num(e.balanceAfter), memo: e.memo, createdAt: e.createdAt.toISOString() })),
     };
@@ -436,11 +595,22 @@ export default async function adminRoutes(app: FastifyInstance) {
   }
 
   app.get("/admin/trades.csv", async (request, reply) => {
-    const query = request.query as { tenantId?: string; status?: string };
+    const query = request.query as { tenantId?: string; userId?: string; status?: string };
     const tenantId = tenantScope(request, query.tenantId);
-    const statuses = query.status === "OPEN" ? ["OPEN"] : query.status === "ALL" ? ["OPEN", "CLOSED", "LIQUIDATED"] : ["CLOSED", "LIQUIDATED"];
+    const statuses =
+      query.status === "OPEN"
+        ? ["OPEN"]
+        : query.status === "LIQUIDATED"
+          ? ["LIQUIDATED"]
+          : query.status === "ALL"
+            ? ["OPEN", "CLOSED", "LIQUIDATED"]
+            : ["CLOSED", "LIQUIDATED"];
     const trades = await prisma.position.findMany({
-      where: { ...(tenantId ? { tenantId } : {}), status: { in: statuses as never } },
+      where: {
+        ...(tenantId ? { tenantId } : {}),
+        ...(query.userId ? { account: { userId: query.userId } } : {}),
+        status: { in: statuses as never },
+      },
       include: { asset: true, account: { include: { user: true } } },
       orderBy: { updatedAt: "desc" },
       take: 5000,
@@ -448,10 +618,11 @@ export default async function adminRoutes(app: FastifyInstance) {
     const rows = trades.map((p) => [
       p.account.user.username ?? p.account.user.email, p.account.user.displayName ?? "", p.asset.symbol, p.side,
       D.num(p.qty), p.leverage, D.num(p.avgEntryPrice), p.closedPrice ? D.num(p.closedPrice) : "",
-      D.num(p.marginUsed), D.num(p.commission), D.num(p.realizedPnl), p.status, p.openedAt.toISOString(), p.closedAt?.toISOString() ?? "",
+      D.num(p.marginUsed), D.num(p.commission), D.num(p.realizedPnl), D.num(p.unrealizedPnl), p.status,
+      p.openedAt.toISOString(), p.closedAt?.toISOString() ?? "",
     ]);
     reply.header("content-type", "text/csv").header("content-disposition", 'attachment; filename="realbulls-trades.csv"');
-    return rowsToCsv(["user_id", "name", "symbol", "side", "qty", "leverage", "entry", "exit", "margin", "commission", "realized_pnl", "status", "opened_at", "closed_at"], rows);
+    return rowsToCsv(["user_id", "name", "symbol", "side", "qty", "leverage", "entry", "exit", "margin", "commission", "realized_pnl", "unrealized_pnl", "status", "opened_at", "closed_at"], rows);
   });
 
   app.get("/admin/ledger.csv", async (request, reply) => {
