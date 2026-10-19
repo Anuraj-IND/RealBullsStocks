@@ -1,0 +1,22 @@
+{
+	email {$ACME_EMAIL:admin@realbulls.local}
+}
+
+{$SITES:localhost} {
+	encode gzip
+	header {
+		-Server
+	}
+
+	handle_path /api/* {
+		reverse_proxy api:4000
+	}
+
+	handle /ws* {
+		reverse_proxy ws-gateway:8080
+	}
+
+	handle {
+		reverse_proxy web:3000
+	}
+}

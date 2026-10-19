@@ -1,0 +1,136 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: realbulls-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: realbulls
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-realbulls}
+      POSTGRES_DB: realbulls
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - realbulls-pg:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U realbulls -d realbulls"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    container_name: realbulls-redis
+    restart: unless-stopped
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    ports:
+      - "127.0.0.1:6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  api:
+    build:
+      context: ..
+      dockerfile: infra/Dockerfile.api
+    image: realbulls-api:latest
+    container_name: realbulls-api
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      API_PORT: "4000"
+      DATABASE_URL: postgresql://realbulls:${POSTGRES_PASSWORD:-realbulls}@postgres:5432/realbulls?schema=public
+      REDIS_URL: redis://redis:6379
+      JWT_ACCESS_SECRET: ${JWT_ACCESS_SECRET:-change-me-access-secret-change-me}
+      JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET:-change-me-refresh-secret-change-me}
+      ROOT_DOMAIN: ${PUBLIC_HOST:-localhost}
+      CORS_ORIGINS: ${CORS_ORIGINS:-}
+      PUBLIC_API_BASE: https://${PUBLIC_HOST:-localhost}/api
+      PUBLIC_WEB_URL: https://${PUBLIC_HOST:-localhost}
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
+      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
+      GITHUB_CLIENT_ID: ${GITHUB_CLIENT_ID:-}
+      GITHUB_CLIENT_SECRET: ${GITHUB_CLIENT_SECRET:-}
+      ZERODHA_API_KEY: ${ZERODHA_API_KEY:-}
+      ZERODHA_API_SECRET: ${ZERODHA_API_SECRET:-}
+      ZERODHA_REDIRECT: ${ZERODHA_REDIRECT:-}
+      ALLOW_SIGNUP: ${ALLOW_SIGNUP:-true}
+      SIGNUP_STARTING_BALANCE: ${SIGNUP_STARTING_BALANCE:-100000}
+      PNL_TICK_MS: "1000"
+    ports:
+      - "127.0.0.1:4000:4000"
+
+  ws-gateway:
+    build:
+      context: ..
+      dockerfile: infra/Dockerfile.ws
+    image: realbulls-ws:latest
+    container_name: realbulls-ws
+    restart: unless-stopped
+    depends_on:
+      redis:
+        condition: service_healthy
+    environment:
+      WS_PORT: "8080"
+      REDIS_URL: redis://redis:6379
+      BINANCE_SYMBOLS: ${BINANCE_SYMBOLS:-}
+      SYNTHETIC_ENABLED: "true"
+      TICK_THROTTLE_MS: "250"
+      TWELVEDATA_API_KEY: ${TWELVEDATA_API_KEY:-}
+      TWELVEDATA_SYMBOLS: ${TWELVEDATA_SYMBOLS:-}
+      TWELVEDATA_POLL_MS: ${TWELVEDATA_POLL_MS:-60000}
+      ZERODHA_API_KEY: ${ZERODHA_API_KEY:-}
+      ZERODHA_SYMBOLS: ${ZERODHA_SYMBOLS:-}
+      ZERODHA_POLL_MS: ${ZERODHA_POLL_MS:-30000}
+    ports:
+      - "127.0.0.1:8080:8080"
+
+  web:
+    build:
+      context: ..
+      dockerfile: infra/Dockerfile.web
+      args:
+        NEXT_PUBLIC_SITE_URL: https://${PUBLIC_HOST:-localhost}
+    image: realbulls-web:latest
+    container_name: realbulls-web
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      ROOT_DOMAIN: ${ROOT_DOMAIN:-app.example.com}
+      API_INTERNAL_URL: http://api:4000
+      NEXT_PUBLIC_SITE_URL: https://${PUBLIC_HOST:-localhost}
+    ports:
+      - "127.0.0.1:3000:3000"
+    depends_on:
+      - api
+
+  caddy:
+    image: caddy:2-alpine
+    container_name: realbulls-caddy
+    restart: unless-stopped
+    depends_on:
+      - web
+      - api
+      - ws-gateway
+    environment:
+      SITES: ${SITES:-app.example.com}
+      ACME_EMAIL: ${ACME_EMAIL:-admin@realbulls.local}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - realbulls-caddy-data:/data
+      - realbulls-caddy-config:/config
+
+volumes:
+  realbulls-pg:
+  realbulls-redis:
+  realbulls-caddy-data:
+  realbulls-caddy-config:

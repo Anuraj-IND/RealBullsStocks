@@ -1,0 +1,501 @@
+
+generator client {
+  provider = "prisma-client-js"
+  output   = "../generated/client"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+
+enum UserRole {
+  SUPER_ADMIN
+  TENANT_ADMIN
+  TRADER
+}
+
+enum UserStatus {
+  ACTIVE
+  SUSPENDED
+  PENDING
+}
+
+enum AccountType {
+  DEMO
+  LIVE
+}
+
+enum AccountStatus {
+  ACTIVE
+  MARGIN_CALL
+  LIQUIDATED
+  CLOSED
+}
+
+enum AssetClass {
+  FOREX
+  CRYPTO
+  COMMODITY
+  STOCK
+  INDEX
+}
+
+enum Segment {
+  EQUITY
+  FOREX
+  CRYPTO
+  COMMODITY
+  FUTURES
+  OPTIONS
+  INDEX_FUTURES
+  INDEX_OPTIONS
+  STOCK_FUTURES
+  STOCK_OPTIONS
+}
+
+enum LedgerDirection {
+  DEBIT
+  CREDIT
+}
+
+enum LedgerType {
+  DEPOSIT
+  WITHDRAWAL
+  ADJUSTMENT
+  REALIZED_PNL
+  COMMISSION
+  SWAP
+  MARGIN_HOLD
+  MARGIN_RELEASE
+  LIQUIDATION_FEE
+}
+
+enum OrderSide {
+  BUY
+  SELL
+}
+
+enum OrderType {
+  MARKET
+  LIMIT
+  STOP
+}
+
+enum OrderStatus {
+  PENDING
+  FILLED
+  PARTIAL
+  CANCELLED
+  REJECTED
+  EXPIRED
+}
+
+enum PositionStatus {
+  OPEN
+  CLOSED
+  LIQUIDATED
+}
+
+enum LeverageScope {
+  GLOBAL
+  ASSET_CLASS
+  ASSET
+}
+
+enum Timeframe {
+  M1
+  M5
+  M15
+  H1
+  H4
+  D1
+}
+
+
+model Tenant {
+  id           String   @id @default(cuid())
+  name         String
+  slug         String   @unique
+  domain       String   @unique
+  logoUrl      String?
+  primaryColor String   @default("#DC001C")
+  accentColor  String   @default("#FFCC00")
+  background   String   @default("#0B132B")
+  themeJson    Json?
+  allowedSegments String[] @default([])
+  status       UserStatus @default(ACTIVE)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  users        User[]
+  accounts     Account[]
+  ledger       LedgerEntry[]
+  orders       Order[]
+  positions    Position[]
+  assetConfigs AssetConfig[]
+  leverageRules LeverageRule[]
+
+  @@index([domain])
+}
+
+
+model User {
+  id           String     @id @default(cuid())
+  tenantId     String
+  email        String
+  username     String?
+  passwordHash String
+  displayName  String?
+  role         UserRole   @default(TRADER)
+  status       UserStatus @default(ACTIVE)
+  locale       String     @default("en")
+  commissionPerLotOverride Decimal? @db.Decimal(24, 8)
+  commissionPerOrderOverride Decimal? @db.Decimal(24, 8)
+  allowedSegments String[] @default([])
+  lastLoginIp  String?
+  lastLoginAt  DateTime?
+  createdAt    DateTime   @default(now())
+  updatedAt    DateTime   @updatedAt
+
+  tenant       Tenant     @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  accounts     Account[]
+  watchlists   Watchlist[]
+  leverageOverrides UserLeverageOverride[]
+  sessions     Session[]
+  auditLogs    AuditLog[]
+  priceAlerts  PriceAlert[]
+  notifications Notification[]
+
+  @@unique([tenantId, email])
+  @@unique([tenantId, username])
+  @@index([tenantId, status])
+}
+
+model Session {
+  id           String   @id @default(cuid())
+  userId       String
+  refreshHash  String
+  ip           String?
+  userAgent    String?
+  expiresAt    DateTime
+  revokedAt    DateTime?
+  createdAt    DateTime @default(now())
+
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+model AuditLog {
+  id         String   @id @default(cuid())
+  tenantId   String?
+  actorId    String?
+  action     String
+  targetType String?
+  targetId   String?
+  before     Json?
+  after      Json?
+  ip         String?
+  createdAt  DateTime @default(now())
+
+  actor      User?    @relation(fields: [actorId], references: [id], onDelete: SetNull)
+
+  @@index([tenantId, createdAt])
+  @@index([actorId])
+}
+
+
+model Account {
+  id            String        @id @default(cuid())
+  userId        String
+  tenantId      String
+  type          AccountType   @default(DEMO)
+  baseCurrency  String        @default("USD")
+  balance       Decimal       @default(0) @db.Decimal(24, 8)
+  marginUsed    Decimal       @default(0) @db.Decimal(24, 8)
+  status        AccountStatus @default(ACTIVE)
+  isPrimary     Boolean       @default(false)
+  isHouse       Boolean       @default(false)
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
+
+  user          User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tenant        Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  ledger        LedgerEntry[]
+  orders        Order[]
+  positions     Position[]
+
+  @@index([tenantId, status])
+  @@index([userId])
+}
+
+model LedgerEntry {
+  id            String          @id @default(cuid())
+  tenantId      String
+  accountId     String
+  entryGroupId  String
+  direction     LedgerDirection
+  type          LedgerType
+  amount        Decimal         @db.Decimal(24, 8)
+  balanceAfter  Decimal         @db.Decimal(24, 8)
+  currency      String          @default("USD")
+  refType       String?
+  refId         String?
+  memo          String?
+  createdBy     String?
+  createdAt     DateTime        @default(now())
+
+  tenant        Tenant          @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  account       Account         @relation(fields: [accountId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, createdAt])
+  @@index([accountId, createdAt])
+  @@index([entryGroupId])
+}
+
+
+model Asset {
+  id             String     @id @default(cuid())
+  symbol         String     @unique
+  name           String
+  assetClass     AssetClass
+  segment        String     @default("")
+  baseCurrency   String
+  quoteCurrency  String
+  contractSize   Decimal    @default(1) @db.Decimal(24, 8)
+  tickSize       Decimal    @default(0.01) @db.Decimal(24, 8)
+  minQty         Decimal    @default(0.01) @db.Decimal(24, 8)
+  maxLeverage    Int        @default(100)
+  feedSource     String     @default("synthetic") 
+  instrumentToken String?   @unique
+  expiry         DateTime?
+  strike         Decimal?   @db.Decimal(24, 8)
+  optionType     String?
+  enabled        Boolean    @default(true)
+  createdAt      DateTime   @default(now())
+  updatedAt      DateTime   @updatedAt
+
+  configs        AssetConfig[]
+  orders         Order[]
+  positions      Position[]
+  watchlistItems WatchlistItem[]
+  priceAlerts    PriceAlert[]
+
+  @@index([assetClass, enabled])
+}
+
+model Instrument {
+  instrumentToken String   @id
+  exchangeToken   String   @default("")
+  tradingsymbol   String
+  name            String
+  expiry          DateTime?
+  strike          Decimal  @default(0) @db.Decimal(24, 8)
+  tickSize        Decimal  @default(0.05) @db.Decimal(24, 8)
+  lotSize         Int      @default(1)
+  instrumentType  String   @default("")
+  segment         String   @default("")
+  exchange        String   @default("")
+  lastPrice       Decimal  @default(0) @db.Decimal(24, 8)
+  updatedAt       DateTime @updatedAt
+
+  @@index([tradingsymbol])
+  @@index([name])
+  @@index([exchange, instrumentType])
+  @@index([name, expiry, strike])
+  @@index([expiry])
+}
+
+model AssetConfig {
+  id               String   @id @default(cuid())
+  tenantId         String
+  assetId          String
+  enabled          Boolean  @default(true)
+  spreadMarkupBps  Decimal  @default(0) @db.Decimal(10, 4) 
+  spreadMarkdownBps Decimal @default(0) @db.Decimal(10, 4) 
+  commissionPerLot Decimal  @default(0) @db.Decimal(24, 8)
+  commissionPerOrder Decimal @default(0) @db.Decimal(24, 8)
+  minLeverage      Int      @default(1)
+  maxLeverage      Int?
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  tenant           Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  asset            Asset    @relation(fields: [assetId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, assetId])
+}
+
+model LeverageRule {
+  id           String        @id @default(cuid())
+  tenantId     String?
+  scope        LeverageScope
+  assetClass   AssetClass?
+  assetId      String?
+  maxLeverage  Int
+  marginCallPct Decimal      @default(100) @db.Decimal(10, 4)
+  stopOutPct   Decimal       @default(50) @db.Decimal(10, 4)
+  enabled      Boolean       @default(true)
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+
+  tenant       Tenant?       @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, scope])
+}
+
+model UserLeverageOverride {
+  id         String     @id @default(cuid())
+  userId     String
+  segment    Segment?
+  assetClass AssetClass?
+  assetId    String?
+  leverage   Int
+  createdAt  DateTime   @default(now())
+  updatedAt  DateTime   @updatedAt
+
+  user       User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+
+model Order {
+  id             String      @id @default(cuid())
+  tenantId       String
+  accountId      String
+  assetId        String
+  side           OrderSide
+  type           OrderType
+  qty            Decimal     @db.Decimal(24, 8)
+  price          Decimal?    @db.Decimal(24, 8)
+  triggerPrice   Decimal?    @db.Decimal(24, 8)
+  stopLoss       Decimal?    @db.Decimal(24, 8)
+  takeProfit     Decimal?    @db.Decimal(24, 8)
+  leverage       Int         @default(1)
+  status         OrderStatus @default(PENDING)
+  filledPrice    Decimal?    @db.Decimal(24, 8)
+  filledQty      Decimal     @default(0) @db.Decimal(24, 8)
+  rejectReason   String?
+  idempotencyKey String?     @unique
+  positionId     String?
+  createdAt      DateTime    @default(now())
+  updatedAt      DateTime    @updatedAt
+  filledAt       DateTime?
+
+  tenant         Tenant      @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  account        Account     @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  asset          Asset       @relation(fields: [assetId], references: [id])
+
+  @@index([tenantId, status])
+  @@index([accountId, status])
+  @@index([assetId, status])
+}
+
+model Position {
+  id              String         @id @default(cuid())
+  tenantId        String
+  accountId       String
+  assetId         String
+  side            OrderSide
+  qty             Decimal        @db.Decimal(24, 8)
+  avgEntryPrice   Decimal        @db.Decimal(24, 8)
+  leverage        Int            @default(1)
+  marginUsed      Decimal        @db.Decimal(24, 8)
+  stopLoss        Decimal?       @db.Decimal(24, 8)
+  takeProfit      Decimal?       @db.Decimal(24, 8)
+  unrealizedPnl   Decimal        @default(0) @db.Decimal(24, 8)
+  realizedPnl     Decimal        @default(0) @db.Decimal(24, 8)
+  commission      Decimal        @default(0) @db.Decimal(24, 8)
+  liquidationPrice Decimal?      @db.Decimal(24, 8)
+  status          PositionStatus @default(OPEN)
+  openedAt        DateTime       @default(now())
+  updatedAt       DateTime       @updatedAt
+  closedAt        DateTime?
+  closedPrice     Decimal?       @db.Decimal(24, 8)
+
+  tenant          Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  account         Account        @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  asset           Asset          @relation(fields: [assetId], references: [id])
+
+  @@index([tenantId, status])
+  @@index([accountId, status])
+  @@index([assetId, status])
+}
+
+model Watchlist {
+  id        String          @id @default(cuid())
+  userId    String
+  name      String          @default("Default")
+  createdAt DateTime        @default(now())
+
+  user      User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  items     WatchlistItem[]
+
+  @@index([userId])
+}
+
+model WatchlistItem {
+  id          String   @id @default(cuid())
+  watchlistId String
+  assetId     String
+  sortOrder   Int      @default(0)
+  createdAt   DateTime @default(now())
+
+  watchlist   Watchlist @relation(fields: [watchlistId], references: [id], onDelete: Cascade)
+  asset       Asset     @relation(fields: [assetId], references: [id], onDelete: Cascade)
+
+  @@unique([watchlistId, assetId])
+}
+
+model Candle {
+  id        String    @id @default(cuid())
+  assetId   String
+  timeframe Timeframe
+  bucket    DateTime
+  open      Decimal   @db.Decimal(24, 8)
+  high      Decimal   @db.Decimal(24, 8)
+  low       Decimal   @db.Decimal(24, 8)
+  close     Decimal   @db.Decimal(24, 8)
+  volume    Decimal   @default(0) @db.Decimal(24, 8)
+
+  @@unique([assetId, timeframe, bucket])
+  @@index([assetId, timeframe, bucket])
+}
+
+model PriceAlert {
+  id          String    @id @default(cuid())
+  userId      String
+  tenantId    String
+  assetId     String
+  direction   String    
+  price       Decimal   @db.Decimal(24, 8)
+  status      String    @default("ACTIVE") 
+  note        String?
+  triggeredAt DateTime?
+  createdAt   DateTime  @default(now())
+
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  asset       Asset     @relation(fields: [assetId], references: [id], onDelete: Cascade)
+
+  @@index([userId, status])
+  @@index([assetId, status])
+  @@index([tenantId, status])
+}
+
+model Notification {
+  id        String   @id @default(cuid())
+  userId    String
+  tenantId  String
+  kind      String   
+  title     String
+  body      String?
+  read      Boolean  @default(false)
+  createdAt DateTime @default(now())
+
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, read, createdAt])
+}

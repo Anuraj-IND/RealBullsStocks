@@ -1,0 +1,12 @@
+FROM node:20-alpine
+RUN apk add --no-cache openssl
+RUN corepack enable
+WORKDIR /repo
+COPY pnpm-workspace.yaml package.json turbo.json tsconfig.base.json ./
+COPY packages ./packages
+COPY apps/api ./apps/api
+RUN pnpm install --no-frozen-lockfile
+RUN pnpm --filter @realbulls/db generate
+ENV NODE_ENV=production
+EXPOSE 4000
+CMD ["pnpm", "--filter", "@realbulls/api", "start"]

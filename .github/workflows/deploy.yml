@@ -1,0 +1,104 @@
+name: Deploy
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths-ignore:
+      - "**/*.md"
+
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build api image
+        run: docker build -f infra/Dockerfile.api -t realbulls-api:latest .
+
+      - name: Build ws image
+        run: docker build -f infra/Dockerfile.ws -t realbulls-ws:latest .
+
+      - name: Build web image
+        run: |
+          docker build -f infra/Dockerfile.web \
+            --build-arg NEXT_PUBLIC_SITE_URL=https://${{ secrets.PUBLIC_HOST }} \
+            -t realbulls-web:latest .
+
+      - name: Package
+        run: |
+          set -o pipefail
+          docker save realbulls-api:latest realbulls-ws:latest realbulls-web:latest | gzip > images.tgz
+          tar --exclude=node_modules --exclude=.next --exclude=.turbo --exclude=generated --exclude=.git --exclude="*.tsbuildinfo" \
+            -czf src.tgz packages apps infra brand
+          gzip -t images.tgz
+          ls -lh images.tgz src.tgz
+
+      - name: Setup SSH
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\n' "${{ secrets.DEPLOY_SSH_KEY }}" > ~/.ssh/id
+          chmod 600 ~/.ssh/id
+          ssh-keyscan -H "${{ secrets.DEPLOY_HOST }}" >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Upload bundles
+        run: |
+          for i in 1 2 3; do
+            echo "upload attempt $i"
+            if scp -i ~/.ssh/id -o StrictHostKeyChecking=no \
+              -o ServerAliveInterval=20 -o ServerAliveCountMax=6 \
+              images.tgz src.tgz ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }}:/opt/realbulls/; then
+              if ssh -i ~/.ssh/id -o StrictHostKeyChecking=no \
+                ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} \
+                "gzip -t /opt/realbulls/images.tgz && ls -lh /opt/realbulls/images.tgz"; then
+                echo "upload verified on attempt $i"
+                exit 0
+              fi
+              echo "remote verification failed on attempt $i"
+            else
+              echo "scp failed on attempt $i"
+            fi
+            sleep 5
+          done
+          echo "upload failed after 3 attempts"
+          exit 1
+
+      - name: Deploy
+        run: |
+          ssh -i ~/.ssh/id -o StrictHostKeyChecking=no \
+            -o ServerAliveInterval=20 -o ServerAliveCountMax=6 \
+            ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} '
+              set -e
+              cd /opt/realbulls
+              echo "disk before load:"; df -h / | tail -1
+              gzip -t images.tgz
+              rm -rf /var/lib/containerd/io.containerd.content.v1.content/ingest/* 2>/dev/null || true
+              docker builder prune -af >/dev/null 2>&1 || true
+              docker image prune -f >/dev/null 2>&1 || true
+              tar -xzf src.tgz && rm -f src.tgz
+              if ! docker load -i images.tgz; then
+                echo "load failed (likely low disk) - recycling containers/images and retrying"
+                (cd infra && docker compose down --remove-orphans) || true
+                docker image prune -af || true
+                rm -rf /var/lib/containerd/io.containerd.content.v1.content/ingest/* 2>/dev/null || true
+                echo "disk after recycle:"; df -h / | tail -1
+                docker load -i images.tgz
+              fi
+              rm -f images.tgz
+              echo "disk after load:"; df -h / | tail -1
+              docker image prune -f >/dev/null 2>&1 || true
+              cd infra
+              docker compose run --rm --no-deps -T api pnpm --filter @realbulls/db push --accept-data-loss || true
+              docker compose up -d --no-build --remove-orphans
+              sleep 4
+              docker compose up -d --no-build
+              docker compose ps --format "{{.Name}} {{.Status}}"
+              sleep 6
+              docker compose exec -T api pnpm --filter @realbulls/db push --accept-data-loss || true
+            '
