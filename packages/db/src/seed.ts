@@ -157,11 +157,12 @@ async function main() {
     role: "SUPER_ADMIN" | "TENANT_ADMIN" | "TRADER",
     displayName: string,
     balance: number,
+    createdById?: string | null,
   ) {
     const user = await prisma.user.upsert({
       where: { tenantId_email: { tenantId, email } },
-      update: {},
-      create: { tenantId, email, passwordHash, role, displayName, status: "ACTIVE" },
+      update: createdById ? { createdById } : {},
+      create: { tenantId, email, passwordHash, role, displayName, status: "ACTIVE", createdById: createdById ?? null },
     });
     const existing = await prisma.account.findFirst({ where: { userId: user.id } });
     if (!existing) {
@@ -250,10 +251,10 @@ async function main() {
   await ensureHouse(tenantA.id, tenantA.slug);
   await ensureHouse(tenantB.id, tenantB.slug);
 
-  await upsertUser(tenantA.id, "admin@realbulls.io", "SUPER_ADMIN", "Realbulls Admin", 1000000);
-  await upsertUser(tenantA.id, "trader@realbulls.io", "TRADER", "Alice Trader", 100000);
-  await upsertUser(tenantB.id, "trader@bullsx.io", "TRADER", "Bob Trader", 50000);
-  await upsertUser(tenantB.id, "admin@bullsx.io", "TENANT_ADMIN", "BullsX Admin", 250000);
+  const superAdmin = await upsertUser(tenantA.id, "admin@realbulls.io", "SUPER_ADMIN", "Realbulls Admin", 1000000);
+  await upsertUser(tenantA.id, "trader@realbulls.io", "TRADER", "Alice Trader", 100000, superAdmin.id);
+  const tenantAdmin = await upsertUser(tenantB.id, "admin@bullsx.io", "TENANT_ADMIN", "BullsX Admin", 250000, superAdmin.id);
+  await upsertUser(tenantB.id, "trader@bullsx.io", "TRADER", "Bob Trader", 50000, tenantAdmin.id);
 
   console.log("[seed] done");
   console.log("[seed] login: admin@realbulls.io / trader@realbulls.io / trader@bullsx.io  (password: %s)", PASSWORD);

@@ -11,6 +11,7 @@ import {
   fillPrice,
   weightedAverageEntry,
   previewOrder,
+  isLossLimitReached,
 } from "../src/index.js";
 
 describe("margin", () => {
@@ -27,6 +28,14 @@ describe("margin", () => {
   });
 });
 
+describe("loss limit", () => {
+  it("triggers at 95% loss of balance", () => {
+    expect(isLossLimitReached(1000, -950)).toBe(true);
+    expect(isLossLimitReached(1000, -949.99)).toBe(false);
+    expect(isLossLimitReached(1000, 0)).toBe(false);
+    expect(isLossLimitReached(0, -1)).toBe(false);
+  });
+});
 describe("pnl", () => {
   it("long profits when price rises", () => {
     expect(

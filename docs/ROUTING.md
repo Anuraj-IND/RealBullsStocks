@@ -38,7 +38,9 @@ Base: `apps/web/src/app`. All routes are at the root regardless of tenant — te
 | `/login` | `login/page.tsx` | Client | No | — | Credential login form |
 | `/login/callback` | `login/callback/page.tsx` | Client | No | — | OAuth fragment-token callback |
 | `/terminal` | `terminal/page.tsx` | Client | Yes | All roles | Main trading terminal |
-| `/admin` | `admin/page.tsx` | Client | Yes | `SUPER_ADMIN` / `TENANT_ADMIN` | Admin Control Center |
+| `/admin` | `admin/page.tsx` | Client | Yes | `SUPER_ADMIN` / `TENANT_ADMIN` | Role dispatcher → `/admin/super` or `/admin/tenant` |
+| `/admin/super` | `admin/super/page.tsx` | Client | Yes | `SUPER_ADMIN` | Super admin panel (full platform control) |
+| `/admin/tenant` | `admin/tenant/page.tsx` | Client | Yes | `TENANT_ADMIN` | Tenant admin panel (own clients only) |
 | `/analytics` | `analytics/page.tsx` | Client | Yes | All roles | Performance analytics |
 | `/orderbook` | `orderbook/page.tsx` | Client | Yes | All roles | Market depth + time & sales |
 | `/positions` | `positions/page.tsx` | Client | Yes | All roles | Open positions / ledger |
@@ -67,7 +69,13 @@ Base: `apps/web/src/app`. All routes are at the root regardless of tenant — te
 
 ### Middleware — `src/middleware.ts`
 
-Minimal (20 lines) and purely additive — it never redirects, rewrites, or blocks.
+Two responsibilities: an **API proxy** and additive tenant headers.
+
+**`/api/*` proxy (runtime).** The client bundle is built with the relative API base `/api` (`infra/Dockerfile.web` ARG default, `docker-compose.yml` `${NEXT_PUBLIC_API_URL:-/api}`). Behind Caddy that is handled by `handle_path /api/*` → `api:4000`, but when the web container is reached **directly** (`http://localhost:3000`) nothing serves `/api/*`, so Next answers 404 and every API call renders as a bare *"Not Found"* on the login screen.
+
+`middleware` therefore rewrites `/api/*` to `${API_INTERNAL_URL}/*` (runtime env, default `http://localhost:4000`) via `NextResponse.rewrite`. Because it is resolved per-request, no build-time host is baked into the image and the same-origin `/api` base works through either entry point. Requests arriving via Caddy never reach this branch — Caddy proxies `/api/*` first.
+
+**Tenant headers (additive).** Never redirects or blocks:
 
 ```ts
 export const config = {
@@ -144,9 +152,22 @@ export function useEnsureSession() {
 
 Used by `/terminal`, `/admin`, `/analytics`, `/orderbook`, `/positions`, `/settings`. **Soft guard** — redirects only when no stored session AND no in-memory user; does not block render during the check.
 
-### Role gating — `/admin` (`admin/page.tsx:64`)
+### Role gating — `/admin` (`admin/page.tsx`)
 
-After `sessionChecked`, checks `user.role`; if not `SUPER_ADMIN` and not `TENANT_ADMIN` → `window.location.href = "/"`. `isSuper` flag controls the "tenants" tab, role `<select>` (288–289), and scope `<select>` (816–824). Terminal mobile nav adds "Admin" only when `isAdmin`.
+`/admin` is now a thin **dispatcher**: once `sessionChecked`, it reads `user.role` and redirects to `adminHomePath(user.role)` — `/admin/super` for `SUPER_ADMIN`, `/admin/tenant` for `TENANT_ADMIN`. Non-admins are sent to `/`.
+
+`/admin/super` and `/admin/tenant` each guard their own role: opening the wrong panel bounces the user to the other one (or `/` for a trader).
+
+Both panels render the shared `components/admin/AdminConsole.tsx`. Tab visibility is driven by `TABS_BY_ROLE`:
+
+| Role | Tabs |
+|---|---|
+| `SUPER_ADMIN` | overview, admins, users, trades, ledger, positions, risk, audit, tenants |
+| `TENANT_ADMIN` | overview, users, trades, ledger, positions, audit |
+
+`TENANT_ADMIN` therefore has no **Admins**, **Risk & Leverage** or **Tenants** tab (no tenant provisioning, no platform-wide settings), and the "↑ Admin" promotion button on a trader row is super-admin only.
+
+> The UI is convenience only. The real boundary is server-side — see "Admin scope" in the API section below.
 
 ### Navigation
 
@@ -300,6 +321,31 @@ Legend — **Auth**: `public` = no token; `Bearer` = `authenticate`; role = `req
 | GET | `/admin/audit` | Latest 200 audit logs |
 
 `tenantScope` (38–43): SUPER_ADMIN any tenant; TENANT_ADMIN own tenant only, cross-tenant → 403.
+
+#### Admin scope — owner-based isolation (`src/lib/scope.ts`)
+
+Tenant-level access is **not** sufficient for a tenant admin. `User.createdById` records the admin who created each user, and every admin route filters on it in the Prisma query itself.
+
+| Helper | Behaviour |
+|---|---|
+| `isSuperAdmin(auth)` | `true` for `SUPER_ADMIN` — unrestricted, global access. |
+| `createdByUserWhere(auth)` | SUPER_ADMIN → `{}` (no restriction). TENANT_ADMIN → `createdById = auth.sub` (users they personally created). |
+| `assertManagesUser(auth, target)` | Throws 403 unless the caller is a super admin, the target is the caller, or `target.createdById === auth.sub`. |
+| `visibleUserIds` / `visibleAccountIds` | Resolve the caller's visible id sets; super admins get `null` (unrestricted). |
+
+Enforcement points:
+
+- **Lists** — `/admin/users`, `/admin/admins` filter by `createdById`.
+- **Detail** — `/admin/users/:id/detail` asserts ownership.
+- **Mutations** — `PATCH /admin/users/:id`, `POST /admin/users/:id/reset-password`, `PUT /admin/users/:id/leverage(/segments)`, `PATCH /admin/accounts/:id`, `POST /admin/ledger/adjust`, `POST /admin/positions/:id/force-close` all assert ownership of the target user/account.
+- **Reporting** — `/admin/summary`, `/admin/trades(.csv)`, `/admin/ledger(.csv)`, `/admin/positions` are restricted to the caller's owned account ids.
+- **Audit** — `/admin/audit` is restricted to the caller's own `actorId`.
+- **Role limits** — a tenant admin may only create and manage `TRADER` accounts; `POST /admin/users` with a non-trader role → 403, `PATCH /admin/users/:id` promoting to an admin role → 403.
+- **Platform settings** — `PATCH /admin/tenant/segments`, `PUT /admin/leverage` and `PUT /admin/assets/config` are super-admin only: they change tenant/platform-wide configuration that would otherwise affect users the caller does not own.
+
+`POST /admin/users` stamps `createdById = auth.sub` on the newly created user, which is what makes the isolation work for users created from the UI.
+
+> Regression coverage: `cd apps/api && pnpm test:admin-scope` (39 assertions against the real HTTP routes).
 
 #### `routes/tenants.ts` — `authenticate` + `requireRole("SUPER_ADMIN")` (10–11)
 | Method | Path | Behavior |

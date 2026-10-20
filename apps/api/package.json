@@ -8,7 +8,8 @@
     "start": "tsx src/index.ts",
     "build": "tsc --noEmit",
     "typecheck": "tsc --noEmit",
-    "lint": "echo \"no lint\""
+    "lint": "echo \"no lint\"",
+    "test:admin-scope": "tsx scripts/test-admin-scope.ts"
   },
   "dependencies": {
     "@fastify/cors": "^10.0.1",

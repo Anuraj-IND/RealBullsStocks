@@ -83,28 +83,15 @@ export interface AssetQuote {
   mid: number;
   ts?: number;
   asOf?: number;
-  source: "redis" | "close";
-  kind: "live" | "close";
+  source: "redis";
+  kind: "live";
 }
 
 export async function getQuoteForAsset(asset: Asset): Promise<AssetQuote | null> {
   const quote = await getQuote(asset.symbol);
-  if (quote && quote.mid > 0 && quote.ts && Date.now() - quote.ts <= MAX_QUOTE_AGE_MS) {
-    return { ...quote, source: "redis", kind: "live", asOf: quote.ts };
-  }
-
-  const close = await prisma.marketClose.findUnique({ where: { assetId: asset.id } });
-  if (!close) return null;
-  const price = Number(close.price);
-  if (price <= 0) return null;
-  return {
-    bid: price,
-    ask: price,
-    mid: price,
-    asOf: close.asOf.getTime(),
-    source: "close",
-    kind: "close",
-  };
+  if (!quote || quote.mid <= 0 || !quote.ts) return null;
+  if (Date.now() - quote.ts > MAX_QUOTE_AGE_MS) return null;
+  return { ...quote, source: "redis", kind: "live", asOf: quote.ts };
 }
 
 export async function getEffectiveConfig(tenantId: string, asset: Asset): Promise<EffectiveConfig> {
@@ -168,10 +155,9 @@ export function brokerageForQty(isDerivative: boolean, qty: number, brokerage: B
 
 export async function isSegmentTradable(userId: string, tenantId: string, asset: Asset): Promise<boolean> {
   const segment = resolveAssetSegment(asset);
-  const [user, tenant] = await Promise.all([
-    prisma.user.findUnique({ where: { id: userId }, select: { allowedSegments: true } }),
-    prisma.tenant.findUnique({ where: { id: tenantId }, select: { allowedSegments: true } }),
-  ]);
+  const user = await prisma.user.findUnique({ where: { id: userId }, select: { role: true, allowedSegments: true } });
+  if (user?.role === "SUPER_ADMIN") return true;
+  const tenant = await prisma.tenant.findUnique({ where: { id: tenantId }, select: { allowedSegments: true } });
   const list = user?.allowedSegments?.length ? user.allowedSegments : tenant?.allowedSegments?.length ? tenant.allowedSegments : [];
   return list.length === 0 || list.includes(segment);
 }

@@ -54,9 +54,30 @@ class WsClient {
     socket.onerror = () => socket.close();
   }
 
+  private tickQueue: Map<string, import("@realbulls/shared").Tick> = new Map();
+  private rafPending = false;
+
+  private flushTicks(): void {
+    this.rafPending = false;
+    const store = useMarketStore.getState();
+    for (const tick of this.tickQueue.values()) {
+      store.setTick(tick);
+    }
+    this.tickQueue.clear();
+  }
+
   private handle(msg: WsServerMessage): void {
-    if (msg.op === "tick") useMarketStore.getState().setTick(msg.data);
-    else if (msg.op === "account") useAccountStore.getState().setSnapshot(msg.data);
+    if (msg.op === "tick") {
+      // Queue ticks and flush once per animation frame to avoid flooding React
+      // with too many synchronous state updates (causes "Too many nested updates")
+      this.tickQueue.set(msg.data.symbol, msg.data);
+      if (!this.rafPending) {
+        this.rafPending = true;
+        requestAnimationFrame(() => this.flushTicks());
+      }
+    } else if (msg.op === "account") {
+      useAccountStore.getState().setSnapshot(msg.data);
+    }
     for (const listener of this.listeners) listener(msg);
   }
 

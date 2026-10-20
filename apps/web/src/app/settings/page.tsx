@@ -1,13 +1,13 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import { TopBar, useEnsureSession } from "@/components/terminal/TopBar";
 import { Card } from "@/components/ui/Card";
 import { cls, fmtPrice, fmtSigned } from "@/lib/format";
-import { useAuthStore } from "@/lib/store";
+import { useAuthStore, toast } from "@/lib/store";
 import { useI18n, LOCALES, type Locale } from "@/lib/i18n";
-import { useAlerts, useCreateAlert, useDeleteAlert, useUpdateProfile, useChangePassword, useNotifications, useAssets, useZerodhaStatus } from "@/lib/hooks";
-import { API_BASE } from "@/lib/api";
+import { useAlerts, useCreateAlert, useDeleteAlert, useUpdateProfile, useChangePassword, useNotifications, useAssets, useBrokerStatus, useConnectBroker } from "@/lib/hooks";
 
 export default function SettingsPage() {
   useEnsureSession();
@@ -27,6 +27,7 @@ function SettingsInner() {
   const setSession = useAuthStore((s) => s.setSession);
   const tenant = useAuthStore((s) => s.tenant);
   const accounts = useAuthStore((s) => s.accounts);
+  const isSuperAdmin = user?.role === "SUPER_ADMIN";
 
   const [displayName, setDisplayName] = useState(user?.displayName ?? "");
   useEffect(() => setDisplayName(user?.displayName ?? ""), [user?.displayName]);
@@ -71,7 +72,7 @@ function SettingsInner() {
       </Card>
 
       <SecurityCard />
-      <BrokerCard />
+      {isSuperAdmin && <BrokerCard />}
       <AlertsCard />
 
       <Card title={t("common.notifications")}>
@@ -82,32 +83,66 @@ function SettingsInner() {
 }
 
 function BrokerCard() {
-  const status = useZerodhaStatus();
+  const status = useBrokerStatus();
+  const connect = useConnectBroker();
+  const qc = useQueryClient();
   const connected = status.data?.connected ?? false;
   const configured = status.data?.configured ?? false;
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const market = params.get("market");
+    if (!market) return;
+    if (market === "connected") {
+      toast.success("Market data connected", "Live prices are now available");
+    } else {
+      toast.error("Market data connection failed", "Please try again");
+    }
+    params.delete("market");
+    const query = params.toString();
+    window.history.replaceState(null, "", `${window.location.pathname}${query ? `?${query}` : ""}`);
+    void qc.invalidateQueries({ queryKey: ["broker", "status"] });
+    void qc.invalidateQueries({ queryKey: ["assets"] });
+    void qc.invalidateQueries({ queryKey: ["watchlists"] });
+  }, [qc]);
+
+  function startConnection() {
+    connect.mutate(
+      { returnTo: "/settings" },
+      {
+        onSuccess: ({ url }) => {
+          window.location.href = url;
+        },
+        onError: () => toast.error("Could not start market data connection"),
+      },
+    );
+  }
+
   return (
-    <Card title="Market data broker">
+    <Card title="Market data">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="text-sm">
           <div className="flex items-center gap-2">
             <span className={cls("h-2 w-2", connected ? "bg-lime" : "bg-brandbright")} />
-            <span className="font-medium">Zerodha Kite Connect</span>
+            <span className="font-medium">Live market feed</span>
             <span className={cls("badge", connected ? "bg-lime/15 text-lime" : "bg-slate2 text-muted")}>
-              {connected ? "Connected" : configured ? "Not connected" : "Not configured"}
+              {connected ? "Connected" : configured ? "Not connected" : "Unavailable"}
             </span>
           </div>
           <p className="mt-1 text-xs text-muted">
             {connected
-              ? `Live NSE/BSE market data (user ${status.data?.userId ?? "—"}).`
-              : "Connect your Zerodha account to stream real Indian prices. Zerodha requires a login once per day."}
+              ? "Live prices and charts are available to every account."
+              : "Prices and charts are shared across all accounts. Reconnect once per trading day."}
           </p>
         </div>
-        <a
-          href={`${API_BASE}/broker/zerodha/login`}
-          className={cls("btn-primary py-1.5 text-xs", !configured && "pointer-events-none opacity-50")}
+        <button
+          type="button"
+          onClick={startConnection}
+          disabled={!configured || connect.isPending}
+          className={cls("btn-primary py-1.5 text-xs", !configured && "cursor-not-allowed opacity-50")}
         >
-          {connected ? "Reconnect" : "Connect Zerodha"}
-        </a>
+          {connected ? "Reconnect" : "Connect"}
+        </button>
       </div>
     </Card>
   );

@@ -37,13 +37,16 @@ async function main() {
     credentials: true,
   });
 
-  app.addHook("onSend", async (_request, reply, payload) => {
+  app.addHook("onSend", async (request, reply, payload) => {
     reply.header("X-Content-Type-Options", "nosniff");
     reply.header("X-Frame-Options", "DENY");
     reply.header("Referrer-Policy", "no-referrer");
     reply.header("X-XSS-Protection", "0");
     reply.header("Permissions-Policy", "geolocation=(), microphone=(), camera=()");
-    if (env.isProd) reply.header("Strict-Transport-Security", "max-age=31536000; includeSubDomains");
+    const forwardedProto = String(request.headers["x-forwarded-proto"] ?? "").split(",")[0]?.trim();
+    if (env.isProd && (request.protocol === "https" || forwardedProto === "https")) {
+      reply.header("Strict-Transport-Security", "max-age=31536000; includeSubDomains");
+    }
     return payload;
   });
   app.addContentTypeParser("application/json", { parseAs: "string" }, (_req, body, done) => {

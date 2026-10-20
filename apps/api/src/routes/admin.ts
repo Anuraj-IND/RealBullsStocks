@@ -1,5 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
+import type { Prisma } from "@realbulls/db";
 import {
   adminAdjustSchema,
   leverageUpdateSchema,
@@ -17,6 +18,14 @@ import { getQuote } from "../services/market.service.js";
 import { closePosition } from "../services/order.service.js";
 import { D } from "../lib/money.js";
 import { filledQtyByPosition } from "../lib/positions.js";
+import {
+  isSuperAdmin,
+  createdByUserWhere,
+  assertManagesUser,
+  visibleUserIds,
+  visibleAccountIds,
+  type AdminScope,
+} from "../lib/scope.js";
 
 const canAdmin = ["SUPER_ADMIN", "TENANT_ADMIN"] as const;
 
@@ -31,6 +40,17 @@ const SEG_ENUM = z.enum([
   "STOCK_OPTIONS",
 ]);
 
+/**
+ * Combines `where` fragments into a single Prisma filter, dropping empty ones.
+ * Using `AND` avoids clobbering sibling `OR` clauses (e.g. search filters).
+ */
+function andWhere(...parts: (Prisma.UserWhereInput | undefined)[]): Prisma.UserWhereInput {
+  const kept = parts.filter((p): p is Prisma.UserWhereInput => Boolean(p) && Object.keys(p as object).length > 0);
+  if (kept.length === 0) return {};
+  if (kept.length === 1) return kept[0]!;
+  return { AND: kept };
+}
+
 export default async function adminRoutes(app: FastifyInstance) {
   app.addHook("preHandler", authenticate);
   app.addHook("preHandler", requireRole(...canAdmin));
@@ -41,6 +61,41 @@ export default async function adminRoutes(app: FastifyInstance) {
     if (auth.role === "SUPER_ADMIN") return requested ?? null;
     if (requested && requested !== auth.tenantId) throw forbidden("Cross-tenant access denied");
     return auth.tenantId;
+  }
+
+  /**
+   * The acting admin's authorization context.
+   */
+  function scopeOf(request: { auth?: AdminScope }): AdminScope {
+    const auth = request.auth!;
+    return { sub: auth.sub, role: auth.role, tenantId: auth.tenantId };
+  }
+
+  /**
+   * Loads a user and asserts the acting admin may manage it.
+   * Tenant admins may only manage the users they personally created.
+   */
+  async function loadManageableUser(request: { auth?: AdminScope }, id: string) {
+    const auth = scopeOf(request);
+    const target = await prisma.user.findUnique({ where: { id } });
+    if (!target) throw notFound("User not found");
+    if (target.displayName === "HOUSE") throw forbidden("System account is not editable");
+    tenantScope(request, target.tenantId);
+    assertManagesUser(auth, target);
+    return target;
+  }
+
+  /**
+   * Loads an account and asserts the acting admin may manage it.
+   * Tenant admins may only manage accounts belonging to users they created.
+   */
+  async function loadManageableAccount(request: { auth?: AdminScope }, id: string) {
+    const auth = scopeOf(request);
+    const acct = await prisma.account.findUnique({ where: { id }, include: { user: { select: { id: true, createdById: true, tenantId: true } } } });
+    if (!acct || acct.isHouse) throw notFound("Account not found");
+    tenantScope(request, acct.tenantId);
+    assertManagesUser(auth, acct.user);
+    return acct;
   }
 
   
@@ -60,21 +115,27 @@ export default async function adminRoutes(app: FastifyInstance) {
 
   app.get("/admin/users", async (request) => {
     const query = request.query as { tenantId?: string; q?: string };
+    const auth = scopeOf(request);
     const tenantId = tenantScope(request, query.tenantId);
     const users = await prisma.user.findMany({
-      where: {
-        ...(tenantId ? { tenantId } : {}),
-        email: { not: { endsWith: ".internal" } },
-        ...(query.q
-          ? {
-              OR: [
-                { email: { contains: query.q, mode: "insensitive" } },
-                { username: { contains: query.q, mode: "insensitive" } },
-                { displayName: { contains: query.q, mode: "insensitive" } },
-              ],
-            }
-          : {}),
-      },
+      where: andWhere(
+        tenantId ? { tenantId } : undefined,
+        // SUPER_ADMIN sees every user; a tenant admin sees only the users
+        // they personally created (their own account is not a "client").
+        createdByUserWhere(auth),
+        {
+          email: { not: { endsWith: ".internal" } },
+          ...(query.q
+            ? {
+                OR: [
+                  { email: { contains: query.q, mode: "insensitive" } },
+                  { username: { contains: query.q, mode: "insensitive" } },
+                  { displayName: { contains: query.q, mode: "insensitive" } },
+                ],
+              }
+            : {}),
+        },
+      ),
       include: { accounts: { where: { isHouse: false } } },
       orderBy: { createdAt: "desc" },
       take: 200,
@@ -183,16 +244,17 @@ export default async function adminRoutes(app: FastifyInstance) {
     const auth = request.auth!;
     const { id } = request.params as { id: string };
     const body = patchUserSchema.parse(request.body);
-    const target = await prisma.user.findUnique({ where: { id } });
-    if (!target) throw notFound("User not found");
-    if (target.displayName === "HOUSE") throw forbidden("System account is not editable");
-    tenantScope(request, target.tenantId);
+    const target = await loadManageableUser(request, id);
 
     if ((body.role === "SUPER_ADMIN" || target.role === "SUPER_ADMIN") && auth.role !== "SUPER_ADMIN") {
       throw forbidden("Only a super admin can manage super admins");
     }
     if (id === auth.sub && (body.status === "SUSPENDED" || (body.role && body.role !== auth.role))) {
       throw badRequest("You cannot suspend or demote your own account");
+    }
+    // A tenant admin may only create/manage plain traders, never other admins.
+    if (auth.role === "TENANT_ADMIN" && body.role && body.role !== "TRADER") {
+      throw forbidden("Tenant admins can only manage trader accounts");
     }
 
     const updated = await prisma.user.update({
@@ -233,6 +295,8 @@ export default async function adminRoutes(app: FastifyInstance) {
       tenantId = body.tenantId ?? (await prisma.tenant.findFirst({ orderBy: { createdAt: "asc" } }))?.id ?? null;
     } else {
       if (body.role === "SUPER_ADMIN") throw forbidden("Only a super admin can create super admins");
+      // Tenant admins may only create plain traders — never other admins.
+      if (body.role !== "TRADER") throw forbidden("Tenant admins can only create trader accounts");
       tenantId = tenantScope(request, body.tenantId ?? null);
     }
     if (!tenantId) throw badRequest("No tenant available");
@@ -249,7 +313,19 @@ export default async function adminRoutes(app: FastifyInstance) {
     const passwordHash = await hashPassword(password);
 
     const user = await prisma.user.create({
-      data: { tenantId, email, username, passwordHash, role: body.role, displayName: body.name, status: "ACTIVE" },
+      data: {
+        tenantId,
+        email,
+        username,
+        passwordHash,
+        role: body.role,
+        displayName: body.name,
+        status: "ACTIVE",
+        // Attribute the user to the admin who created them. This is the basis
+        // for tenant-admin isolation: a tenant admin only ever sees the users
+        // they personally created.
+        createdById: auth.sub,
+      },
     });
     const account = await prisma.account.create({
       data: { userId: user.id, tenantId, type: "DEMO", baseCurrency: "USD", balance: 0, isPrimary: true },
@@ -268,12 +344,15 @@ export default async function adminRoutes(app: FastifyInstance) {
 
   app.get("/admin/admins", async (request) => {
     const query = request.query as { tenantId?: string; q?: string };
+    const auth = scopeOf(request);
     const tenantId = tenantScope(request, query.tenantId);
     const admins = await prisma.user.findMany({
-      where: {
-        role: { in: ["SUPER_ADMIN", "TENANT_ADMIN"] },
-        ...(tenantId ? { tenantId } : {}),
-        ...(query.q
+      where: andWhere(
+        { role: { in: ["SUPER_ADMIN", "TENANT_ADMIN"] } },
+        tenantId ? { tenantId } : undefined,
+        // Tenant admins only see the admins they personally created.
+        createdByUserWhere(auth),
+        query.q
           ? {
               OR: [
                 { email: { contains: query.q, mode: "insensitive" } },
@@ -281,8 +360,8 @@ export default async function adminRoutes(app: FastifyInstance) {
                 { displayName: { contains: query.q, mode: "insensitive" } },
               ],
             }
-          : {}),
-      },
+          : undefined,
+      ),
       include: { accounts: { where: { isHouse: false } } },
       orderBy: { createdAt: "asc" },
       take: 200,
@@ -316,6 +395,7 @@ export default async function adminRoutes(app: FastifyInstance) {
 
   app.get("/admin/trades", async (request) => {
     const query = request.query as { tenantId?: string; userId?: string; status?: string; take?: string };
+    const auth = scopeOf(request);
     const tenantId = tenantScope(request, query.tenantId);
     const take = Math.min(Number(query.take ?? 200), 500);
     const statuses =
@@ -327,9 +407,13 @@ export default async function adminRoutes(app: FastifyInstance) {
             ? ["OPEN", "CLOSED", "LIQUIDATED"]
             : ["CLOSED", "LIQUIDATED"];
 
+    // Tenant admins may only see trades on accounts of users they created.
+    const ownedAccountIds = isSuperAdmin(auth) ? null : await visibleAccountIds(auth);
+
     const trades = await prisma.position.findMany({
       where: {
         ...(tenantId ? { tenantId } : {}),
+        ...(ownedAccountIds ? { accountId: { in: ownedAccountIds } } : {}),
         ...(query.userId ? { account: { userId: query.userId } } : {}),
         status: { in: statuses as never },
       },
@@ -382,11 +466,15 @@ export default async function adminRoutes(app: FastifyInstance) {
 
   app.get("/admin/ledger", async (request) => {
     const query = request.query as { tenantId?: string; accountId?: string; type?: string; take?: string };
+    const auth = scopeOf(request);
     const tenantId = tenantScope(request, query.tenantId);
     const take = Math.min(Number(query.take ?? 150), 500);
+    // Tenant admins may only see ledger entries on accounts of users they created.
+    const ownedAccountIds = isSuperAdmin(auth) ? null : await visibleAccountIds(auth);
     const entries = await prisma.ledgerEntry.findMany({
       where: {
         ...(tenantId ? { tenantId } : {}),
+        ...(ownedAccountIds ? { accountId: { in: ownedAccountIds } } : {}),
         ...(query.accountId ? { accountId: query.accountId } : {}),
         ...(query.type ? { type: query.type as never } : {}),
         account: { isHouse: false },
@@ -418,10 +506,7 @@ export default async function adminRoutes(app: FastifyInstance) {
     const auth = request.auth!;
     const { id } = request.params as { id: string };
     const body = resetPasswordSchema.parse(request.body ?? {});
-    const target = await prisma.user.findUnique({ where: { id } });
-    if (!target) throw notFound("User not found");
-    if (target.displayName === "HOUSE") throw forbidden("System account is not editable");
-    tenantScope(request, target.tenantId);
+    const target = await loadManageableUser(request, id);
     if ((target.role === "SUPER_ADMIN" || target.role === "TENANT_ADMIN") && auth.role !== "SUPER_ADMIN") {
       throw forbidden("Only a super admin can reset an admin password");
     }
@@ -439,6 +524,8 @@ export default async function adminRoutes(app: FastifyInstance) {
     const user = await prisma.user.findUnique({ where: { id }, include: { accounts: { where: { isHouse: false } } } });
     if (!user || user.displayName === "HOUSE") throw notFound("User not found");
     tenantScope(request, user.tenantId);
+    // Tenant admins may only open the detail view of users they created.
+    assertManagesUser(scopeOf(request), user);
 
     const accountIds = user.accounts.map((a) => a.id);
     const statuses =
@@ -605,7 +692,9 @@ export default async function adminRoutes(app: FastifyInstance) {
 
   app.get("/admin/trades.csv", async (request, reply) => {
     const query = request.query as { tenantId?: string; userId?: string; status?: string };
+    const auth = scopeOf(request);
     const tenantId = tenantScope(request, query.tenantId);
+    const ownedAccountIds = isSuperAdmin(auth) ? null : await visibleAccountIds(auth);
     const statuses =
       query.status === "OPEN"
         ? ["OPEN"]
@@ -617,6 +706,7 @@ export default async function adminRoutes(app: FastifyInstance) {
     const trades = await prisma.position.findMany({
       where: {
         ...(tenantId ? { tenantId } : {}),
+        ...(ownedAccountIds ? { accountId: { in: ownedAccountIds } } : {}),
         ...(query.userId ? { account: { userId: query.userId } } : {}),
         status: { in: statuses as never },
       },
@@ -639,9 +729,16 @@ export default async function adminRoutes(app: FastifyInstance) {
 
   app.get("/admin/ledger.csv", async (request, reply) => {
     const query = request.query as { tenantId?: string; type?: string };
+    const auth = scopeOf(request);
     const tenantId = tenantScope(request, query.tenantId);
+    const ownedAccountIds = isSuperAdmin(auth) ? null : await visibleAccountIds(auth);
     const entries = await prisma.ledgerEntry.findMany({
-      where: { ...(tenantId ? { tenantId } : {}), ...(query.type ? { type: query.type as never } : {}), account: { isHouse: false } },
+      where: {
+        ...(tenantId ? { tenantId } : {}),
+        ...(ownedAccountIds ? { accountId: { in: ownedAccountIds } } : {}),
+        ...(query.type ? { type: query.type as never } : {}),
+        account: { isHouse: false },
+      },
       include: { account: { include: { user: true } } },
       orderBy: { createdAt: "desc" },
       take: 10000,
@@ -662,6 +759,8 @@ export default async function adminRoutes(app: FastifyInstance) {
 
   app.patch("/admin/tenant/segments", async (request) => {
     const auth = request.auth!;
+    // Platform segment configuration is a super-admin concern.
+    if (auth.role !== "SUPER_ADMIN") throw forbidden("Only a super admin can change platform segments");
     const body = z.object({ segments: z.array(SEG_ENUM) }).parse(request.body);
     const tenant = await prisma.tenant.update({ where: { id: auth.tenantId }, data: { allowedSegments: body.segments } });
     await prisma.auditLog.create({
@@ -672,18 +771,26 @@ export default async function adminRoutes(app: FastifyInstance) {
 
   app.get("/admin/summary", async (request) => {
     const query = request.query as { tenantId?: string };
+    const auth = scopeOf(request);
     const tenantId = tenantScope(request, query.tenantId);
+    const superScope = isSuperAdmin(auth);
     const scope = tenantId ? { tenantId } : {};
 
+    // Tenant admins only ever see figures for the users they created.
+    const ownedUserIds = superScope ? null : await visibleUserIds(auth);
+    const ownedAccountIds = superScope ? null : await visibleAccountIds(auth);
+    const userScope = superScope ? {} : { id: { in: ownedUserIds ?? [] } };
+    const accountScope = superScope ? {} : { id: { in: ownedAccountIds ?? [] } };
+
     const [users, admins, accounts, openPositions, closedAgg, commissionAgg, depositAgg, balanceAgg] = await Promise.all([
-      prisma.user.count({ where: { ...scope, email: { not: { endsWith: ".internal" } } } }),
-      prisma.user.count({ where: { ...scope, role: { in: ["SUPER_ADMIN", "TENANT_ADMIN"] } } }),
-      prisma.account.count({ where: { ...scope, isHouse: false } }),
-      prisma.position.count({ where: { ...scope, status: "OPEN" } }),
-      prisma.position.aggregate({ where: { ...scope, status: { in: ["CLOSED", "LIQUIDATED"] } }, _sum: { realizedPnl: true } }),
-      prisma.ledgerEntry.aggregate({ where: { ...scope, type: "COMMISSION", direction: "DEBIT" }, _sum: { amount: true } }),
-      prisma.ledgerEntry.aggregate({ where: { ...scope, type: "DEPOSIT", direction: "CREDIT" }, _sum: { amount: true } }),
-      prisma.account.aggregate({ where: { ...scope, isHouse: false }, _sum: { marginUsed: true, balance: true } }),
+      prisma.user.count({ where: andWhere(scope, userScope, { email: { not: { endsWith: ".internal" } } }) as Prisma.UserWhereInput }),
+      prisma.user.count({ where: andWhere(scope, userScope, { role: { in: ["SUPER_ADMIN", "TENANT_ADMIN"] } }) as Prisma.UserWhereInput }),
+      prisma.account.count({ where: { ...scope, ...accountScope, isHouse: false } }),
+      prisma.position.count({ where: { ...scope, ...accountScope, status: "OPEN" } }),
+      prisma.position.aggregate({ where: { ...scope, ...accountScope, status: { in: ["CLOSED", "LIQUIDATED"] } }, _sum: { realizedPnl: true } }),
+      prisma.ledgerEntry.aggregate({ where: { ...scope, ...accountScope, type: "COMMISSION", direction: "DEBIT" }, _sum: { amount: true } }),
+      prisma.ledgerEntry.aggregate({ where: { ...scope, ...accountScope, type: "DEPOSIT", direction: "CREDIT" }, _sum: { amount: true } }),
+      prisma.account.aggregate({ where: { ...scope, ...accountScope, isHouse: false }, _sum: { marginUsed: true, balance: true } }),
     ]);
 
     return {
@@ -701,9 +808,15 @@ export default async function adminRoutes(app: FastifyInstance) {
 
   app.get("/admin/positions", async (request) => {
     const query = request.query as { tenantId?: string };
+    const auth = scopeOf(request);
     const tenantId = tenantScope(request, query.tenantId);
+    const ownedAccountIds = isSuperAdmin(auth) ? null : await visibleAccountIds(auth);
     const positions = await prisma.position.findMany({
-      where: { status: "OPEN", ...(tenantId ? { tenantId } : {}) },
+      where: {
+        status: "OPEN",
+        ...(tenantId ? { tenantId } : {}),
+        ...(ownedAccountIds ? { accountId: { in: ownedAccountIds } } : {}),
+      },
       include: { account: { include: { user: true } }, asset: true },
       orderBy: { openedAt: "desc" },
       take: 300,
@@ -735,6 +848,12 @@ export default async function adminRoutes(app: FastifyInstance) {
     const pos = await prisma.position.findUnique({ where: { id } });
     if (!pos) throw notFound("Position not found");
     tenantScope(request, pos.tenantId);
+    // Tenant admins may only force-close positions of users they created.
+    const acct = await prisma.account.findUnique({
+      where: { id: pos.accountId },
+      include: { user: { select: { id: true, createdById: true } } },
+    });
+    if (acct) assertManagesUser(scopeOf(request), acct.user);
     const result = await closePosition({ positionId: id, accountId: pos.accountId, reason: "ADMIN_FORCE_CLOSE", createdBy: request.auth!.sub });
     await prisma.auditLog.create({ data: { tenantId: pos.tenantId, actorId: request.auth!.sub, action: "FORCE_CLOSE", targetType: "Position", targetId: id, ip: request.ip } });
     return result;
@@ -744,9 +863,8 @@ export default async function adminRoutes(app: FastifyInstance) {
   app.patch("/admin/accounts/:id", async (request) => {
     const { id } = request.params as { id: string };
     const body = accountStatusSchema.parse(request.body);
-    const acct = await prisma.account.findUnique({ where: { id } });
-    if (!acct || acct.isHouse) throw notFound("Account not found");
-    tenantScope(request, acct.tenantId);
+    // Tenant admins may only manage accounts of users they created.
+    const acct = await loadManageableAccount(request, id);
     await prisma.account.update({ where: { id }, data: { status: body.status } });
     await prisma.auditLog.create({ data: { tenantId: acct.tenantId, actorId: request.auth!.sub, action: "ACCOUNT_STATUS", targetType: "Account", targetId: id, after: body, ip: request.ip } });
     return { ok: true };
@@ -755,8 +873,8 @@ export default async function adminRoutes(app: FastifyInstance) {
   app.post("/admin/ledger/adjust", async (request) => {
     const auth = request.auth!;
     const body = adminAdjustSchema.parse(request.body);
-    const account = await prisma.account.findUnique({ where: { id: body.accountId } });
-    if (!account || account.isHouse) throw notFound("Account not found");
+    // Tenant admins may only adjust accounts of users they created.
+    const account = await loadManageableAccount(request, body.accountId);
     tenantScope(request, account.tenantId);
 
     const delta =
@@ -793,6 +911,10 @@ export default async function adminRoutes(app: FastifyInstance) {
   });
 
   app.put("/admin/leverage", async (request, reply) => {
+    const auth = request.auth!;
+    // Leverage rules are tenant/platform-wide config: a tenant admin must not
+    // change limits for users they did not create.
+    if (auth.role !== "SUPER_ADMIN") throw forbidden("Only a super admin can change platform leverage rules");
     const body = leverageUpdateSchema.parse(request.body);
     const tenantId = tenantScope(request, body.tenantId ?? null);
     const rule = await prisma.leverageRule.create({
@@ -813,9 +935,8 @@ export default async function adminRoutes(app: FastifyInstance) {
   app.put("/admin/users/:id/leverage", async (request, reply) => {
     const { id } = request.params as { id: string };
     const body = userLeverageSchema.parse({ ...(request.body as object), userId: id });
-    const target = await prisma.user.findUnique({ where: { id } });
-    if (!target) throw notFound("User not found");
-    tenantScope(request, target.tenantId);
+    // Tenant admins may only set leverage for users they created.
+    const target = await loadManageableUser(request, id);
 
     await prisma.userLeverageOverride.deleteMany({
       where: { userId: id, assetId: body.assetId ?? null, assetClass: body.assetClass ?? null },
@@ -831,10 +952,8 @@ export default async function adminRoutes(app: FastifyInstance) {
     const auth = request.auth!;
     const { id } = request.params as { id: string };
     const body = leverageSegmentsSchema.parse(request.body);
-    const target = await prisma.user.findUnique({ where: { id } });
-    if (!target) throw notFound("User not found");
-    if (target.displayName === "HOUSE") throw forbidden("System account is not editable");
-    tenantScope(request, target.tenantId);
+    // Tenant admins may only set leverage for users they created.
+    const target = await loadManageableUser(request, id);
 
     if ((target.role === "SUPER_ADMIN" || target.role === "TENANT_ADMIN") && auth.role !== "SUPER_ADMIN") {
       throw forbidden("Only a super admin can set leverage for admins");
@@ -860,6 +979,10 @@ export default async function adminRoutes(app: FastifyInstance) {
   });
 
   app.put("/admin/assets/config", async (request, reply) => {
+    const auth = request.auth!;
+    // Per-tenant asset configuration affects every user in the tenant, so it is
+    // reserved for super admins.
+    if (auth.role !== "SUPER_ADMIN") throw forbidden("Only a super admin can change asset configuration");
     const body = assetConfigSchema.parse(request.body);
     const tenantId = tenantScope(request, body.tenantId)!;
     const asset = await prisma.asset.findUnique({ where: { id: body.assetId } });
@@ -891,9 +1014,14 @@ export default async function adminRoutes(app: FastifyInstance) {
 
   app.get("/admin/audit", async (request) => {
     const query = request.query as { tenantId?: string };
+    const auth = scopeOf(request);
     const tenantId = tenantScope(request, query.tenantId);
+    // Tenant admins only see the audit trail of their own actions.
     const logs = await prisma.auditLog.findMany({
-      where: tenantId ? { tenantId } : {},
+      where: {
+        ...(tenantId ? { tenantId } : {}),
+        ...(isSuperAdmin(auth) ? {} : { actorId: auth.sub }),
+      },
       orderBy: { createdAt: "desc" },
       take: 200,
     });

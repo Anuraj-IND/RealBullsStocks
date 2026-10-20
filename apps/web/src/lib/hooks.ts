@@ -35,8 +35,8 @@ export interface AssetRow {
   ask?: number;
   mid?: number;
   ts?: number;
-  quoteSource?: "redis" | "close";
-  quoteKind?: "live" | "close";
+  quoteSource?: "redis";
+  quoteKind?: "live";
   quoteAsOf?: number;
 }
 
@@ -54,8 +54,8 @@ export interface WatchlistItem {
   ask?: number;
   mid?: number;
   ts?: number;
-  quoteSource?: "redis" | "close";
-  quoteKind?: "live" | "close";
+  quoteSource?: "redis";
+  quoteKind?: "live";
   quoteAsOf?: number;
 }
 
@@ -366,18 +366,23 @@ export function useChangePassword() {
   });
 }
 
-export interface ZerodhaStatus {
+export interface BrokerStatus {
   configured: boolean;
   connected: boolean;
-  userId: string | null;
   connectedAt: string | null;
 }
 
-export function useZerodhaStatus() {
+export function useBrokerStatus() {
   return useQuery({
-    queryKey: ["broker", "zerodha"],
-    queryFn: () => apiGet<ZerodhaStatus>("/broker/zerodha/status"),
+    queryKey: ["broker", "status"],
+    queryFn: () => apiGet<BrokerStatus>("/broker/status"),
     refetchInterval: 20000,
+  });
+}
+
+export function useConnectBroker() {
+  return useMutation({
+    mutationFn: (body: { returnTo?: string }) => apiPost<{ url: string }>("/broker/connect", body),
   });
 }
 

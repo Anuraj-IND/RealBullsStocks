@@ -48,16 +48,23 @@ const INDEX_UNDERLYINGS = new Set([
   "BANKEX",
 ]);
 
-const FNO_TYPES = new Set(["FUT", "CE", "PE"]);
+const SYNC_TYPES = new Set(["FUT", "CE", "PE", "EQ"]);
 
 function isIndexUnderlying(name: string): boolean {
   return INDEX_UNDERLYINGS.has(name.trim().toUpperCase());
 }
 
 function deriveSegment(name: string, instrumentType: string): string {
+  if (instrumentType === "EQ") return "EQUITY";
   const index = isIndexUnderlying(name);
   if (instrumentType === "FUT") return index ? "INDEX_FUTURES" : "STOCK_FUTURES";
   return index ? "INDEX_OPTIONS" : "STOCK_OPTIONS";
+}
+
+function normalizeSegment(name: string, instrumentType: string, raw: string | undefined): string {
+  if (instrumentType === "EQ") return "EQUITY";
+  const segment = raw?.trim();
+  return segment || deriveSegment(name, instrumentType);
 }
 
 function parseExpiry(raw: string): Date | null {
@@ -108,7 +115,7 @@ async function syncExchange(exchange: string): Promise<number> {
     const token = row[iToken]?.trim();
     const tradingsymbol = row[iSymbol]?.trim();
     const instrumentType = row[iType]?.trim().toUpperCase();
-    if (!token || !tradingsymbol || !instrumentType || !FNO_TYPES.has(instrumentType)) continue;
+    if (!token || !tradingsymbol || !instrumentType || !SYNC_TYPES.has(instrumentType)) continue;
 
     const expiry = parseExpiry(row[iExpiry]?.trim() ?? "");
     if (expiry && expiry.getTime() < cutoff) continue;
@@ -129,7 +136,7 @@ async function syncExchange(exchange: string): Promise<number> {
       tickSize: Number.isFinite(tickRaw) && tickRaw > 0 ? tickRaw : 0.05,
       lotSize: Number.isFinite(lotRaw) && lotRaw > 0 ? Math.round(lotRaw) : 1,
       instrumentType,
-      segment: (iSegment >= 0 ? row[iSegment]?.trim() : "") || deriveSegment(name, instrumentType),
+      segment: normalizeSegment(name, instrumentType, iSegment >= 0 ? row[iSegment] : undefined),
       exchange: (iExchange >= 0 ? row[iExchange]?.trim() : "") || exchange,
       lastPrice: Number.isFinite(lastRaw) ? lastRaw : 0,
     });
@@ -142,7 +149,7 @@ async function syncExchange(exchange: string): Promise<number> {
   return records.length;
 }
 
-export async function syncInstruments(exchanges: string[] = ["NFO", "BFO"]): Promise<Record<string, number>> {
+export async function syncInstruments(exchanges: string[] = ["NFO", "BFO", "NSE"]): Promise<Record<string, number>> {
   const result: Record<string, number> = {};
   for (const exchange of exchanges) {
     result[exchange] = await syncExchange(exchange);
@@ -206,7 +213,7 @@ const SEARCH_ORDER: Prisma.InstrumentOrderByWithRelationInput[] = [
 export async function searchInstruments(params: InstrumentSearchParams) {
   const q = (params.q ?? "").trim();
   const limit = Math.min(Math.max(params.limit ?? 50, 1), 100);
-  const exchanges = params.exchange?.length ? params.exchange : ["NFO", "BFO"];
+  const exchanges = params.exchange?.length ? params.exchange : ["NFO", "BFO", "NSE"];
   const istNow = new Date(Date.now() + 5.5 * 60 * 60 * 1000);
   const cutoff = new Date(Date.UTC(istNow.getUTCFullYear(), istNow.getUTCMonth(), istNow.getUTCDate()));
 
@@ -265,8 +272,11 @@ export async function searchInstruments(params: InstrumentSearchParams) {
     }
   };
 
-  for (let i = 0; i < phases.length; i++) await collect(i, phases[i]);
-  await collect(phases.length);
+  // Cash equities have no expiry, so they sort last in SEARCH_ORDER and can
+  // fall outside the limited window when a symbol has many F&O contracts.
+  await collect(0, { instrumentType: "EQ" });
+  for (let i = 0; i < phases.length; i++) await collect(i + 1, phases[i]);
+  await collect(phases.length + 1);
 
   const expiryTs = (d: Date | null) => (d ? d.getTime() : Number.MAX_SAFE_INTEGER);
   out.sort(
@@ -319,6 +329,7 @@ function underlyingSymbol(name: string): string {
 }
 
 function friendlyName(i: Instrument): string {
+  if (i.instrumentType === "EQ") return i.name;
   const strike = Number(i.strike);
   if (i.instrumentType === "FUT") return `${i.name} Futures`;
   const kind = i.instrumentType === "CE" ? "Call" : i.instrumentType === "PE" ? "Put" : i.instrumentType;
@@ -333,6 +344,7 @@ export async function ensureAssetForInstrument(instrumentToken: string): Promise
   if (!instrument) throw notFound("Instrument not found");
 
   const assetClass = isIndexUnderlying(instrument.name) ? "INDEX" : "STOCK";
+  const isCashEquity = instrument.instrumentType === "EQ";
   const symbol = instrument.tradingsymbol;
   const strike = Number(instrument.strike);
 
@@ -342,14 +354,14 @@ export async function ensureAssetForInstrument(instrumentToken: string): Promise
         symbol,
         name: friendlyName(instrument),
         assetClass,
-        segment: instrument.segment,
-        baseCurrency: underlyingSymbol(instrument.name),
+        segment: isCashEquity ? "EQUITY" : instrument.segment,
+        baseCurrency: isCashEquity ? instrument.tradingsymbol : underlyingSymbol(instrument.name),
         quoteCurrency: "INR",
         contractSize: instrument.lotSize,
         tickSize: instrument.tickSize,
         minQty: 1,
-        maxLeverage: 10,
-        feedSource: "kite",
+        maxLeverage: isCashEquity ? 20 : 10,
+        feedSource: isCashEquity ? "nse" : "kite",
         instrumentToken,
         expiry: instrument.expiry,
         strike: strike > 0 ? strike : null,

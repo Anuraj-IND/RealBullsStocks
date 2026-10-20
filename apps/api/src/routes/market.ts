@@ -20,18 +20,29 @@ export default async function marketRoutes(app: FastifyInstance) {
 
   app.get("/assets", async (request) => {
     const tenant = await requireTenant(request);
+    const isSuperAdmin = request.auth!.role === "SUPER_ADMIN";
+    const isTenantAdmin = request.auth!.role === "TENANT_ADMIN";
+    const isAdmin = isSuperAdmin || isTenantAdmin;
     const user = await prisma.user.findUnique({
       where: { id: request.auth!.sub },
-      select: { commissionPerLotOverride: true, commissionPerOrderOverride: true, allowedSegments: true },
+      select: { role: true, commissionPerLotOverride: true, commissionPerOrderOverride: true, allowedSegments: true },
     });
     const override = user?.commissionPerLotOverride != null ? D.num(user.commissionPerLotOverride) : null;
     const overrideOrder = user?.commissionPerOrderOverride != null ? D.num(user.commissionPerOrderOverride) : null;
-    const allowed = user?.allowedSegments?.length ? user.allowedSegments : tenant.allowedSegments?.length ? tenant.allowedSegments : [];
+    const allowed =
+      user?.role === "SUPER_ADMIN"
+        ? []
+        : user?.allowedSegments?.length
+          ? user.allowedSegments
+          : tenant.allowedSegments?.length
+            ? tenant.allowedSegments
+            : [];
     const assets = await prisma.asset.findMany({ where: { enabled: true }, orderBy: { symbol: "asc" } });
     const result = [];
     for (const a of assets) {
       const assetSegment = resolveAssetSegment(a);
-      if (allowed.length > 0 && !allowed.includes(assetSegment)) continue;
+      // SUPER_ADMIN and TENANT_ADMIN bypass all segment restrictions
+      if (!isAdmin && allowed.length > 0 && !allowed.includes(assetSegment)) continue;
       const config = await getEffectiveConfig(tenant.id, a);
       const risk = await resolveRisk(request.auth!.sub, tenant.id, a, config);
       const [quote, status] = await Promise.all([getQuoteForAsset(a), marketStatusForAsset(a)]);

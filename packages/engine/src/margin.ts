@@ -69,6 +69,11 @@ export function canOpenPosition(available: number, required: number): boolean {
   return available >= required;
 }
 
+export function isLossLimitReached(balance: number, unrealizedPnl: number, lossPct = 0.95): boolean {
+  if (!Number.isFinite(balance) || balance <= 0 || !Number.isFinite(unrealizedPnl)) return false;
+  return unrealizedPnl <= -(balance * lossPct);
+}
+
 
 export function roundToTick(price: number, tickSize: number): number {
   if (tickSize <= 0) return price;

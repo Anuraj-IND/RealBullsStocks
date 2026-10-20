@@ -12,7 +12,7 @@ import {
 import { useSymbolStats, useUiStore } from "@/lib/store";
 import { useAssets } from "@/lib/hooks";
 import { apiGet } from "@/lib/api";
-import { cls, fmtPrice } from "@/lib/format";
+import { cls } from "@/lib/format";
 
 type ChartKind = "candles" | "heikin" | "line";
 
@@ -50,6 +50,7 @@ export function Chart() {
   const seriesRef = useRef<ISeriesApi<"Candlestick"> | ISeriesApi<"Line"> | null>(null);
   const bucketRef = useRef<{ time: number; o: number; h: number; l: number; c: number } | null>(null);
   const haRef = useRef<{ open: number; close: number } | null>(null);
+  const lastHistoricalRef = useRef<{ time: number; close: number } | null>(null);
 
   const symbol = useUiStore((s) => s.activeSymbol);
   const { tick } = useSymbolStats(symbol);
@@ -68,6 +69,7 @@ export function Chart() {
     if (!containerRef.current) return;
     bucketRef.current = null;
     haRef.current = null;
+    lastHistoricalRef.current = null;
     setEmpty(true);
 
     const precision = precisionFor(symbol);
@@ -115,6 +117,9 @@ export function Chart() {
     if (!assetId || !stf || !seriesRef.current) return;
     let cancelled = false;
     (seriesRef.current as ISeriesApi<"Candlestick">).setData([]);
+    bucketRef.current = null;
+    haRef.current = null;
+    lastHistoricalRef.current = null;
     setEmpty(true);
     apiGet<{ candles: Array<{ time: number; open: number; high: number; low: number; close: number }> }>(
       `/assets/${assetId}/candles?timeframe=${stf}&limit=500`,
@@ -122,6 +127,8 @@ export function Chart() {
       .then((r) => {
         if (cancelled || !seriesRef.current || r.candles.length === 0) return;
         setEmpty(false);
+        const last = r.candles[r.candles.length - 1];
+        if (last) lastHistoricalRef.current = { time: last.time, close: last.close };
         if (kind === "line") {
           (seriesRef.current as ISeriesApi<"Line">).setData(r.candles.map((c) => ({ time: c.time as UTCTimestamp, value: c.close })));
         } else {
@@ -150,7 +157,11 @@ export function Chart() {
 
     let bucket = bucketRef.current;
     if (!bucket || bucketTime > bucket.time) {
-      bucket = { time: bucketTime, o: t, h: t, l: t, c: t };
+      // Initialize open from last historical candle close (if it's the current bucket)
+      // to avoid a price spike/gap between historical and live data
+      const lastHist = lastHistoricalRef.current;
+      const openPrice = lastHist && bucketTime === lastHist.time ? lastHist.close : t;
+      bucket = { time: bucketTime, o: openPrice, h: Math.max(openPrice, t), l: Math.min(openPrice, t), c: t };
     } else {
       bucket.h = Math.max(bucket.h, t);
       bucket.l = Math.min(bucket.l, t);
@@ -211,11 +222,9 @@ export function Chart() {
         <div ref={containerRef} className="absolute inset-0" />
         {empty && (
           <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center gap-1 text-center">
-            <span className="text-sm font-semibold text-muted">No chart history</span>
+            <span className="text-sm font-semibold text-muted">Market is not live yet</span>
             <span className="max-w-xs text-[11px] text-muted">
-              {asset?.quoteKind === "close" && asset.mid
-                ? `Official NSE close ${fmtPrice(asset.mid)}. Historical candles will appear only from live ticks.`
-                : "Candles build from live ticks only; no synthetic history is shown."}
+              Candles build from live ticks only. They will appear once live market data starts.
             </span>
           </div>
         )}

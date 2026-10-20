@@ -9,7 +9,7 @@ import { useAssets, useActiveAccount } from "@/lib/hooks";
 import { useAccountStore, useSymbolStats, useUiStore, toast } from "@/lib/store";
 import { useMoney } from "@/lib/money";
 import { useQueryClient } from "@tanstack/react-query";
-import { assetMarketLabel, fmtAsOf, fmtPrice, cls, isDerivativeSegment } from "@/lib/format";
+import { assetMarketLabel, fmtPrice, cls, isDerivativeSegment } from "@/lib/format";
 
 const RISK = { marginCallPct: 100, stopOutPct: 5 };
 
@@ -57,7 +57,6 @@ export function OrderTicket() {
 
   const derivativeSegment = isDerivativeSegment(asset?.segment);
   const marketClosed = asset?.marketOpen === false;
-  const closeOnly = asset?.quoteKind === "close";
 
   const preview = useMemo(() => {
     if (!asset) return null;
@@ -151,15 +150,15 @@ export function OrderTicket() {
           <div className="truncate text-[11px] text-muted">
             {marketClosed
               ? asset?.marketStatusReason ?? "Market closed"
-              : closeOnly
-                ? `Official NSE close${asset?.quoteAsOf ? ` · ${fmtAsOf(asset.quoteAsOf)}` : ""}`
+              : !hasLiveQuote
+                ? "Market is not live yet"
                 : asset?.name ?? "-"}
           </div>
         </div>
         <div className="shrink-0 text-right">
-          <div className="num text-sm">{fmtPrice(liveMid)}</div>
+          <div className="num text-sm">{hasLiveQuote ? fmtPrice(liveMid) : "—"}</div>
           <div className="text-[10px] uppercase tracking-wider text-muted">
-            {closeOnly ? "CLOSE" : assetMarketLabel(asset?.assetClass ?? "", asset?.segment)}
+            {assetMarketLabel(asset?.assetClass ?? "", asset?.segment)}
           </div>
         </div>
       </div>
@@ -227,7 +226,7 @@ export function OrderTicket() {
           </div>
         )}
 
-        {preview && (
+        {preview && hasLiveQuote && (
           <div className="panel-tight space-y-1.5 p-3 text-xs">
             <Row label="Notional" value={money.fmt(preview.notional)} />
             <Row label="Required margin" value={money.fmt(preview.requiredMargin)} />
@@ -241,10 +240,9 @@ export function OrderTicket() {
         {marketClosed && (
           <p className="mb-2 text-[11px] text-brandbright">{asset.marketStatusReason ?? "Market is closed for this instrument."}</p>
         )}
-        {!marketClosed && closeOnly && (
-          <p className="mb-2 text-[11px] text-muted">
-            Display-only official NSE close{asset.quoteAsOf ? ` as of ${fmtAsOf(asset.quoteAsOf)}` : ""}; a live quote is
-            required to place orders.
+        {!marketClosed && !hasLiveQuote && (
+          <p className="mb-2 text-[11px] text-brandbright">
+            Market is not live yet. A live market price is required to place orders.
           </p>
         )}
         <button
@@ -252,7 +250,7 @@ export function OrderTicket() {
           disabled={busy || !canSubmit}
           className={cls("w-full py-3 text-sm font-bold", actionSide === "BUY" ? "btn-buy" : "btn-sell")}
         >
-          {marketClosed ? "Market closed" : closeOnly ? "No live quote" : busy ? "Placing." : `${actionSide} ${qty || ""} ${symbol}`}
+          {marketClosed ? "Market closed" : !hasLiveQuote ? "Market not live" : busy ? "Placing." : `${actionSide} ${qty || ""} ${symbol}`}
         </button>
       </div>
 

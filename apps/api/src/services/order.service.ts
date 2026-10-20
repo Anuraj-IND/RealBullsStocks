@@ -7,6 +7,7 @@ import {
   liquidationPrice,
   evaluateRisk,
   marginLevel,
+  isLossLimitReached,
 } from "@realbulls/engine";
 import type { OrderSide, PlaceOrderInput } from "@realbulls/shared";
 import { prisma } from "../lib/prisma.js";
@@ -359,12 +360,17 @@ export async function closePosition(params: {
   return { positionId, closedQty: closeQty, exitPrice, realizedPnl: pnl, fullyClosed };
 }
 
-export async function closeAllPositions(accountId: string, createdBy?: string, enforceHours = false): Promise<CloseResult[]> {
+export async function closeAllPositions(
+  accountId: string,
+  createdBy?: string,
+  enforceHours = false,
+  reason?: string,
+): Promise<CloseResult[]> {
   const positions = await prisma.position.findMany({ where: { accountId, status: "OPEN" } });
   const results: CloseResult[] = [];
   for (const p of positions) {
     try {
-      results.push(await closePosition({ positionId: p.id, accountId, createdBy, enforceHours }));
+      results.push(await closePosition({ positionId: p.id, accountId, createdBy, enforceHours, reason }));
     } catch (err) {
       if ((err as { code?: string }).code === "MARKET_CLOSED") continue;
       throw err;
@@ -385,12 +391,14 @@ export interface RiskCycleResult {
   accounts: number;
   fills: number;
   liquidations: number;
+  autoCloses: number;
 }
 
 
 export async function runRiskCycle(): Promise<RiskCycleResult> {
   let fills = 0;
   let liquidations = 0;
+  let autoCloses = 0;
 
   const openPositions = await prisma.position.findMany({ where: { status: "OPEN" } });
   const markedAccounts = new Set<string>();
@@ -455,30 +463,49 @@ export async function runRiskCycle(): Promise<RiskCycleResult> {
 
     const refreshed = await prisma.account.findUniqueOrThrow({ where: { id: accountId } });
     const unrealized = await accountUnrealized(accountId);
-    const eq = D.num(refreshed.balance) + unrealized;
+    const balance = D.num(refreshed.balance);
+    const eq = balance + unrealized;
     const used = D.num(refreshed.marginUsed);
     const asset0 = positions[0] ? await prisma.asset.findUnique({ where: { id: positions[0].assetId } }) : null;
     const config = asset0 ? await getEffectiveConfig(account.tenantId, asset0) : null;
     const risk = asset0 && config ? await resolveRisk(account.userId, account.tenantId, asset0, config) : { marginCallPct: 100, stopOutPct: 50 };
-    const state = evaluateRisk({ equity: eq, marginUsed: used, marginCallPct: risk.marginCallPct, stopOutPct: risk.stopOutPct });
 
-    if (state === "STOP_OUT") {
-      await closeAllPositions(accountId, "liquidation-engine");
-      await prisma.account.update({
-        where: { id: accountId },
-        data: { status: "LIQUIDATED", marginUsed: D.dec(0) },
-      });
-      await notifyAccountOwner(accountId, "MARGIN_CALL", "Account liquidated", "Stop-out level reached; all positions were closed.").catch(() => undefined);
-      liquidations += 1;
-    } else if (state === "MARGIN_CALL" && refreshed.status !== "MARGIN_CALL") {
-      await prisma.account.update({ where: { id: accountId }, data: { status: "MARGIN_CALL" } });
-      await notifyAccountOwner(accountId, "MARGIN_CALL", "Margin call", "Your margin level is low — consider closing positions or adding funds.").catch(() => undefined);
-    } else if (state === "OK" && refreshed.status === "MARGIN_CALL") {
-      await prisma.account.update({ where: { id: accountId }, data: { status: "ACTIVE" } });
+    if (isLossLimitReached(balance, unrealized, 0.95)) {
+      const closed = await closeAllPositions(accountId, "risk-engine", false, "AUTO_CLOSE_95");
+      if (closed.length > 0) {
+        await prisma.account.update({
+          where: { id: accountId },
+          data: { status: "ACTIVE", marginUsed: D.dec(0) },
+        });
+        await notifyAccountOwner(
+          accountId,
+          "MARGIN_CALL",
+          "Positions auto-closed",
+          "Unrealized loss reached 95% of balance; all positions were closed.",
+        ).catch(() => undefined);
+        autoCloses += 1;
+      }
+    } else {
+      const state = evaluateRisk({ equity: eq, marginUsed: used, marginCallPct: risk.marginCallPct, stopOutPct: risk.stopOutPct });
+
+      if (state === "STOP_OUT") {
+        await closeAllPositions(accountId, "liquidation-engine", false, "LIQUIDATION");
+        await prisma.account.update({
+          where: { id: accountId },
+          data: { status: "LIQUIDATED", marginUsed: D.dec(0) },
+        });
+        await notifyAccountOwner(accountId, "MARGIN_CALL", "Account liquidated", "Stop-out level reached; all positions were closed.").catch(() => undefined);
+        liquidations += 1;
+      } else if (state === "MARGIN_CALL" && refreshed.status !== "MARGIN_CALL") {
+        await prisma.account.update({ where: { id: accountId }, data: { status: "MARGIN_CALL" } });
+        await notifyAccountOwner(accountId, "MARGIN_CALL", "Margin call", "Your margin level is low - consider closing positions or adding funds.").catch(() => undefined);
+      } else if (state === "OK" && refreshed.status === "MARGIN_CALL") {
+        await prisma.account.update({ where: { id: accountId }, data: { status: "ACTIVE" } });
+      }
     }
   }
 
-  return { accounts: byAccount.size, fills, liquidations };
+  return { accounts: byAccount.size, fills, liquidations, autoCloses };
 }
 
 function shouldTrigger(

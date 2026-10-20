@@ -28,6 +28,7 @@ function assetKindRank(segment?: string): number {
 }
 
 function instrumentContract(r: InstrumentResult): string {
+  if (r.instrumentType === "EQ") return "Stock";
   if (r.instrumentType === "FUT") return "Futures";
   return `${r.strike > 0 ? r.strike : ""} ${r.optionType ?? r.instrumentType}`.trim();
 }
@@ -107,7 +108,7 @@ export function Watchlist() {
       return;
     }
     if (asset && asset.quoteKind !== "live") {
-      toast.error("No live quote", "Trading requires a live price; this is a closing price");
+      toast.error("Market is not live yet", "Trading requires a live market price");
       return;
     }
     setQuickQty(isDerivativeSegment(asset?.segment) ? "1" : "0.1");
@@ -123,7 +124,7 @@ export function Watchlist() {
       return;
     }
     if (asset.quoteKind !== "live") {
-      toast.error("No live quote", "Trading requires a live price; this is a closing price");
+      toast.error("Market is not live yet", "Trading requires a live market price");
       return;
     }
     const qty = parseFloat(quickQty);
@@ -188,7 +189,7 @@ export function Watchlist() {
     ...instrumentResults.map((instrument) => ({
       kind: "instrument" as const,
       instrument,
-      rank: instrument.instrumentType === "FUT" ? 1 : 2,
+      rank: instrument.instrumentType === "EQ" ? 0 : instrument.instrumentType === "FUT" ? 1 : 2,
     })),
   ].sort((x, y) => x.rank - y.rank);
 
@@ -475,7 +476,7 @@ function Row({
   symbol: string;
   assetClass: string;
   segment?: string;
-  quoteKind?: "live" | "close";
+  quoteKind?: "live";
   mid?: number;
   marketOpen?: boolean;
   marketStatusReason?: string;
@@ -490,6 +491,7 @@ function Row({
   const { tick, changePct } = useSymbolStats(symbol);
   const closed = marketOpen === false;
   const price = tick?.mid ?? mid;
+  const hasLive = Boolean(tick?.mid) || (quoteKind === "live" && (mid ?? 0) > 0);
 
   return (
     <div
@@ -507,14 +509,6 @@ function Row({
           <span className="shrink-0 rounded bg-slate/60 px-1 py-px text-[9px] font-bold uppercase tracking-wide text-muted">
             {assetMarketLabel(assetClass, segment)}
           </span>
-          {quoteKind === "close" && (
-            <span
-              className="shrink-0 rounded bg-slate/60 px-1 py-px text-[9px] font-bold uppercase tracking-wide text-muted"
-              title="Official NSE closing price"
-            >
-              CLOSE
-            </span>
-          )}
           {closed && (
             <span className="shrink-0 rounded bg-brand/15 px-1 py-px text-[9px] font-bold uppercase tracking-wide text-brandbright" title={marketStatusReason}>
               CLOSED
@@ -525,10 +519,9 @@ function Row({
 
       <div className="flex items-center gap-2">
         <div className="text-right">
-          <div className="num text-sm">{fmtPrice(price)}</div>
-          <div className={cls("num text-[11px]", changePct >= 0 ? "text-up" : "text-down")}>
-            {changePct >= 0 ? "+" : ""}
-            {changePct.toFixed(2)}%
+          <div className="num text-sm">{hasLive ? fmtPrice(price) : "—"}</div>
+          <div className={cls("num text-[11px]", !hasLive ? "text-muted" : changePct >= 0 ? "text-up" : "text-down")}>
+            {hasLive ? `${changePct >= 0 ? "+" : ""}${changePct.toFixed(2)}%` : "—"}
           </div>
         </div>
         <div className="flex shrink-0 items-center gap-1">
@@ -543,9 +536,9 @@ function Row({
             >
               CLOSED
             </span>
-          ) : quoteKind === "close" ? (
-            <span className="rounded bg-slate/70 px-2 py-1.5 text-[10px] font-bold leading-none text-muted" title="Closing price is display-only">
-              CLOSE
+          ) : !hasLive ? (
+            <span className="rounded bg-slate/70 px-2 py-1.5 text-[10px] font-bold leading-none text-muted" title="Market is not live yet">
+              NOT LIVE
             </span>
           ) : (
             <>
@@ -583,6 +576,18 @@ function Row({
         {onRemove && (
           <button
             className="hidden opacity-0 transition-opacity hover:text-brandbright group-hover:opacity-100 sm:block"
+            title="Remove"
+            onClick={(e) => {
+              e.stopPropagation();
+              onRemove();
+            }}
+          >
+            ×
+          </button>
+        )}
+        {onRemove && (
+          <button
+            className="sm:hidden rounded border border-line px-2 py-1 text-xs text-muted hover:text-brandbright"
             title="Remove"
             onClick={(e) => {
               e.stopPropagation();

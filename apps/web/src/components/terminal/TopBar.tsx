@@ -7,6 +7,7 @@ import { Logo } from "@/components/ui/Logo";
 import { MarketClock } from "@/components/terminal/MarketClock";
 import { NotificationsBell } from "@/components/ui/NotificationsBell";
 import { useAuthStore, useConnectionStore, useUiStore } from "@/lib/store";
+import { useBrokerStatus } from "@/lib/hooks";
 import { useI18n } from "@/lib/i18n";
 import { cls } from "@/lib/format";
 import { ws } from "@/lib/ws";
@@ -20,6 +21,8 @@ export function TopBar() {
   const { t } = useI18n();
   const pathname = usePathname();
   const [menuOpen, setMenuOpen] = useState(false);
+  const broker = useBrokerStatus();
+  const brokerDown = broker.data ? !broker.data.connected : false;
 
   useEffect(() => {
     if (activeAccountId) ws.subscribeAccount(activeAccountId);
@@ -38,6 +41,7 @@ export function TopBar() {
   }
 
   const isAdmin = user?.role === "SUPER_ADMIN" || user?.role === "TENANT_ADMIN";
+  const adminHref = user?.role === "SUPER_ADMIN" ? "/admin/super" : "/admin/tenant";
 
   return (
     <>
@@ -52,7 +56,7 @@ export function TopBar() {
             <NavLink href="/orderbook" active={pathname === "/orderbook"}>{t("nav.orderbook")}</NavLink>
             <NavLink href="/analytics" active={pathname === "/analytics"}>{t("nav.analytics")}</NavLink>
             <NavLink href="/settings" active={pathname === "/settings"}>{t("nav.settings")}</NavLink>
-            {isAdmin && <NavLink href="/admin" active={pathname === "/admin"}>{t("nav.admin")}</NavLink>}
+            {isAdmin && <NavLink href={adminHref} active={pathname.startsWith("/admin")}>{t("nav.admin")}</NavLink>}
           </nav>
         </div>
 
@@ -106,8 +110,8 @@ export function TopBar() {
                     {t("nav.orderbook")}
                   </Link>
                   {isAdmin && (
-                    <Link href="/admin" className="block border-t border-line px-3 py-2 text-sm font-semibold text-accent transition-colors hover:bg-slate" onClick={() => setMenuOpen(false)}>
-                      Admin Panel
+                    <Link href={adminHref} className="block border-t border-line px-3 py-2 text-sm font-semibold text-accent transition-colors hover:bg-slate" onClick={() => setMenuOpen(false)}>
+                      {user?.role === "SUPER_ADMIN" ? "Super Admin Panel" : "Tenant Admin Panel"}
                     </Link>
                   )}
                   <button
@@ -123,6 +127,18 @@ export function TopBar() {
         </div>
       </header>
 
+      {brokerDown && (
+        <div className="flex flex-wrap items-center justify-center gap-x-2 bg-brand/25 px-4 py-1 text-center text-[11px] font-medium text-brandbright">
+          <span>Market is not live yet.</span>
+          {user?.role === "SUPER_ADMIN" ? (
+            <Link href="/settings" className="underline underline-offset-2">
+              Connect market data
+            </Link>
+          ) : (
+            <span className="text-muted">Please wait for the administrator to connect market data.</span>
+          )}
+        </div>
+      )}
       {!connected && (
         <div className="bg-brand/25 px-4 py-1 text-center text-[11px] font-medium text-brandbright">
           {t("top.connecting")}

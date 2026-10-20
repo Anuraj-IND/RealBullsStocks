@@ -10,6 +10,7 @@ import { unauthorized, notFound, badRequest, conflict, HttpError } from "../lib/
 import { resolveTenant } from "../lib/tenant.js";
 import { authenticate } from "../plugins/auth.js";
 import { postLedgerChanges } from "../services/ledger.service.js";
+import { getBrokerStatus } from "../services/broker.service.js";
 import { D } from "../lib/money.js";
 import { redis } from "../lib/redis.js";
 import { env } from "../env.js";
@@ -103,8 +104,16 @@ export default async function authRoutes(app: FastifyInstance) {
 
     const tenantRecord = await prisma.tenant.findUnique({ where: { id: user.tenantId } });
     const accounts = await prisma.account.findMany({ where: { userId: user.id, isHouse: false } });
+    const broker = await getBrokerStatus();
 
-    return { ...tokens, user: publicUser(user), tenant: tenantRecord, accounts: accounts.map(accountDto) };
+    return {
+      ...tokens,
+      user: publicUser(user),
+      tenant: tenantRecord,
+      accounts: accounts.map(accountDto),
+      brokerConnected: broker.connected,
+      brokerConfigured: broker.configured,
+    };
   });
 
   app.post("/auth/register", async (request, reply) => {

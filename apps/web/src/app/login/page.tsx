@@ -15,6 +15,8 @@ interface LoginResponse {
   user: AuthUser;
   tenant: TenantInfo | null;
   accounts: AccountInfo[];
+  brokerConnected: boolean;
+  brokerConfigured: boolean;
 }
 
 export default function LoginPage() {
@@ -40,6 +42,16 @@ export default function LoginPage() {
       setTokens(res.accessToken, res.refreshToken);
       setTenantSlug(res.tenant?.slug ?? null);
       setSession({ user: res.user, tenant: res.tenant, accounts: res.accounts });
+      if (res.user.role === "SUPER_ADMIN" && res.brokerConfigured && !res.brokerConnected) {
+        try {
+          const { url } = await apiPost<{ url: string }>("/broker/connect", { returnTo: "/terminal" });
+          window.location.assign(url);
+          return;
+        } catch {
+          router.push("/terminal");
+          return;
+        }
+      }
       router.push("/terminal");
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "Login failed");

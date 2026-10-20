@@ -156,10 +156,13 @@ model User {
   allowedSegments String[] @default([])
   lastLoginIp  String?
   lastLoginAt  DateTime?
+  createdById  String?
   createdAt    DateTime   @default(now())
   updatedAt    DateTime   @updatedAt
 
   tenant       Tenant     @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  createdBy    User?      @relation("UserCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+  createdUsers User[]     @relation("UserCreatedBy")
   accounts     Account[]
   watchlists   Watchlist[]
   leverageOverrides UserLeverageOverride[]
@@ -171,6 +174,7 @@ model User {
   @@unique([tenantId, email])
   @@unique([tenantId, username])
   @@index([tenantId, status])
+  @@index([tenantId, createdById])
 }
 
 model Session {

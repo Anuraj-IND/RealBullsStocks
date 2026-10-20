@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { assetMarketLabel, cls, fmtAsOf, fmtPrice } from "@/lib/format";
+import { assetMarketLabel, cls, fmtPrice } from "@/lib/format";
 import { useSymbolStats, useUiStore } from "@/lib/store";
 import { useAssets } from "@/lib/hooks";
 
@@ -30,6 +30,7 @@ export function SymbolHeader() {
   const bid = tick?.bid ?? asset?.bid;
   const ask = tick?.ask ?? asset?.ask;
   const spread = bid !== undefined && ask !== undefined ? ask - bid : 0;
+  const hasLive = Boolean(tick?.mid) || (asset?.quoteKind === "live" && (asset.mid ?? 0) > 0);
 
   return (
     <div className="flex flex-wrap items-center justify-between gap-3 border-b border-line bg-navy2/60 px-3 py-2">
@@ -46,13 +47,8 @@ export function SymbolHeader() {
                 CLOSED
               </span>
             )}
-            {asset?.quoteKind === "close" && (
-              <span
-                className="badge bg-slate2 text-muted"
-                title={`Official NSE closing price${asset.quoteAsOf ? ` as of ${fmtAsOf(asset.quoteAsOf)}` : ""}`}
-              >
-                CLOSE {asset.quoteAsOf ? fmtAsOf(asset.quoteAsOf) : ""}
-              </span>
+            {!hasLive && asset?.marketOpen !== false && (
+              <span className="badge bg-brand/15 text-brandbright">MARKET NOT LIVE YET</span>
             )}
           </div>
           <div className="truncate text-[11px] text-muted">{asset?.name ?? "—"}</div>
@@ -65,16 +61,15 @@ export function SymbolHeader() {
       <div className="flex items-center gap-6">
         <div className="text-right">
           <div className={cls("num text-xl font-bold", flash === "up" ? "text-up" : flash === "down" ? "text-down" : "text-ink")}>
-            {fmtPrice(mid)}
+            {fmtPrice(hasLive ? mid : undefined)}
           </div>
-          <div className={cls("num text-xs", up ? "text-up" : "text-down")}>
-            {up ? "+" : ""}
-            {changePct.toFixed(2)}%
+          <div className={cls("num text-xs", !hasLive ? "text-muted" : up ? "text-up" : "text-down")}>
+            {hasLive ? `${up ? "+" : ""}${changePct.toFixed(2)}%` : "Market is not live yet"}
           </div>
         </div>
-        <Stat label="Bid" value={fmtPrice(bid)} tone="down" />
-        <Stat label="Ask" value={fmtPrice(ask)} tone="up" />
-        <Stat label="Spread" value={fmtPrice(spread)} />
+        <Stat label="Bid" value={fmtPrice(hasLive ? bid : undefined)} tone="down" />
+        <Stat label="Ask" value={fmtPrice(hasLive ? ask : undefined)} tone="up" />
+        <Stat label="Spread" value={fmtPrice(hasLive ? spread : undefined)} />
       </div>
     </div>
   );
