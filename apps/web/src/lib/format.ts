@@ -15,6 +15,16 @@ export function fmtSigned(value: number | null | undefined): string {
   return `${s}${value.toFixed(2)}`;
 }
 
+export function fmtAsOf(value: number | null | undefined): string {
+  if (!value) return "";
+  return new Date(value).toLocaleString("en-IN", {
+    timeZone: "Asia/Kolkata",
+    day: "2-digit",
+    month: "short",
+    year: "numeric",
+  });
+}
+
 export function fmtPct(value: number | null | undefined, digits = 2): string {
   if (value === null || value === undefined) return "—";
   return `${value.toFixed(digits)}%`;
@@ -22,4 +32,16 @@ export function fmtPct(value: number | null | undefined, digits = 2): string {
 
 export function cls(...parts: Array<string | false | null | undefined>): string {
   return parts.filter(Boolean).join(" ");
+}
+
+export function assetMarketLabel(assetClass: string, segment?: string): string {
+  const s = (segment ?? "").toUpperCase();
+  if (s.startsWith("NFO")) return "NFO";
+  if (s.startsWith("BFO")) return "BFO";
+  return assetClass;
+}
+
+export function isDerivativeSegment(segment?: string): boolean {
+  const s = (segment ?? "").toUpperCase();
+  return s.includes("FUT") || s.includes("OPT");
 }

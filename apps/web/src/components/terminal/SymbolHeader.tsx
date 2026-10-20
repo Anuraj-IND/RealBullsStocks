@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { cls, fmtPrice } from "@/lib/format";
+import { assetMarketLabel, cls, fmtAsOf, fmtPrice } from "@/lib/format";
 import { useSymbolStats, useUiStore } from "@/lib/store";
 import { useAssets } from "@/lib/hooks";
 
@@ -26,7 +26,10 @@ export function SymbolHeader() {
   }, [tick]);
 
   const up = changePct >= 0;
-  const spread = tick ? tick.ask - tick.bid : 0;
+  const mid = tick?.mid ?? asset?.mid;
+  const bid = tick?.bid ?? asset?.bid;
+  const ask = tick?.ask ?? asset?.ask;
+  const spread = bid !== undefined && ask !== undefined ? ask - bid : 0;
 
   return (
     <div className="flex flex-wrap items-center justify-between gap-3 border-b border-line bg-navy2/60 px-3 py-2">
@@ -35,26 +38,42 @@ export function SymbolHeader() {
           {symbol.slice(0, 2)}
         </span>
         <div>
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             <span className="font-display text-[15px] font-bold">{symbol}</span>
-            {asset && <span className="badge bg-slate2 text-muted">{asset.assetClass}</span>}
+            {asset && <span className="badge bg-slate2 text-muted">{assetMarketLabel(asset.assetClass, asset.segment)}</span>}
+            {asset?.marketOpen === false && (
+              <span className="badge bg-brand/15 text-brandbright" title={asset.marketStatusReason}>
+                CLOSED
+              </span>
+            )}
+            {asset?.quoteKind === "close" && (
+              <span
+                className="badge bg-slate2 text-muted"
+                title={`Official NSE closing price${asset.quoteAsOf ? ` as of ${fmtAsOf(asset.quoteAsOf)}` : ""}`}
+              >
+                CLOSE {asset.quoteAsOf ? fmtAsOf(asset.quoteAsOf) : ""}
+              </span>
+            )}
           </div>
           <div className="truncate text-[11px] text-muted">{asset?.name ?? "—"}</div>
+          {asset?.marketOpen === false && asset.marketStatusReason && (
+            <div className="truncate text-[10px] text-brandbright">{asset.marketStatusReason}</div>
+          )}
         </div>
       </div>
 
       <div className="flex items-center gap-6">
         <div className="text-right">
           <div className={cls("num text-xl font-bold", flash === "up" ? "text-up" : flash === "down" ? "text-down" : "text-ink")}>
-            {fmtPrice(tick?.mid)}
+            {fmtPrice(mid)}
           </div>
           <div className={cls("num text-xs", up ? "text-up" : "text-down")}>
             {up ? "+" : ""}
             {changePct.toFixed(2)}%
           </div>
         </div>
-        <Stat label="Bid" value={fmtPrice(tick?.bid)} tone="down" />
-        <Stat label="Ask" value={fmtPrice(tick?.ask)} tone="up" />
+        <Stat label="Bid" value={fmtPrice(bid)} tone="down" />
+        <Stat label="Ask" value={fmtPrice(ask)} tone="up" />
         <Stat label="Spread" value={fmtPrice(spread)} />
       </div>
     </div>

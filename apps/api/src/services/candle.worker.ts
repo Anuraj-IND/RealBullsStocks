@@ -9,6 +9,8 @@ const FRAMES: Array<{ tf: Timeframe; secs: number }> = [
   { tf: "H1", secs: 3600 },
 ];
 
+const MAX_QUOTE_AGE_MS = 2 * 60 * 1000;
+
 let timer: NodeJS.Timeout | null = null;
 
 async function tick(): Promise<void> {
@@ -17,7 +19,7 @@ async function tick(): Promise<void> {
 
   for (const a of assets) {
     const q = await getQuote(a.symbol);
-    if (!q) continue;
+    if (!q || q.mid <= 0 || !q.ts || now - q.ts > MAX_QUOTE_AGE_MS) continue;
 
     for (const { tf, secs } of FRAMES) {
       const bucket = new Date(Math.floor(now / 1000 / secs) * secs * 1000);
@@ -27,7 +29,7 @@ async function tick(): Promise<void> {
 
       if (!existing) {
         await prisma.candle
-          .create({ data: { assetId: a.id, timeframe: tf, bucket, open: q.mid, high: q.mid, low: q.mid, close: q.mid, volume: 1 } })
+          .create({ data: { assetId: a.id, timeframe: tf, bucket, open: q.mid, high: q.mid, low: q.mid, close: q.mid, volume: 0 } })
           .catch(() => undefined);
       } else {
         await prisma.candle
@@ -37,7 +39,6 @@ async function tick(): Promise<void> {
               high: Math.max(Number(existing.high), q.mid),
               low: Math.min(Number(existing.low), q.mid),
               close: q.mid,
-              volume: { increment: 1 },
             },
           })
           .catch(() => undefined);

@@ -6,7 +6,7 @@ import { authenticate } from "../plugins/auth.js";
 import { primaryAccount } from "../lib/accounts.js";
 import { badRequest, notFound } from "../lib/errors.js";
 import { placeOrder, closePosition, closeAllPositions, cancelOrder, accountUnrealized } from "../services/order.service.js";
-import { getQuote } from "../services/market.service.js";
+import { getQuoteForAsset } from "../services/market.service.js";
 import { toOrderDTO, toPositionDTO } from "../lib/serialize.js";
 import { D } from "../lib/money.js";
 
@@ -158,7 +158,7 @@ export default async function tradingRoutes(app: FastifyInstance) {
     const out = [];
     for (const p of positions) {
       const asset = await prisma.asset.findUnique({ where: { id: p.assetId } });
-      const quote = asset ? await getQuote(asset.symbol) : null;
+      const quote = asset ? await getQuoteForAsset(asset) : null;
       out.push(toPositionDTO(p, asset?.symbol ?? "?", quote?.mid));
     }
     const unrealized = await accountUnrealized(account.id);

@@ -98,8 +98,11 @@ export interface SymbolStats {
 }
 
 
+const STALE_TICK_MS = 5 * 60 * 1000;
+
 export function useSymbolStats(symbol: string): SymbolStats {
-  const tick = useMarketStore((s) => s.ticks[symbol]);
+  const rawTick = useMarketStore((s) => s.ticks[symbol]);
+  const tick = rawTick && rawTick.ts && Date.now() - rawTick.ts <= STALE_TICK_MS ? rawTick : undefined;
   const ref = useMarketStore((s) => s.ref[symbol]);
   const prevMid = useMarketStore((s) => s.prev[symbol]);
   const changePct = tick && ref ? ((tick.mid - ref) / ref) * 100 : 0;

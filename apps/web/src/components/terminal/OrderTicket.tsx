@@ -6,17 +6,17 @@ import { previewOrder } from "@realbulls/engine";
 import type { OrderSide, OrderType } from "@realbulls/shared";
 import { apiPost, ApiError } from "@/lib/api";
 import { useAssets, useActiveAccount } from "@/lib/hooks";
-import { useAccountStore, useMarketStore, useUiStore, toast } from "@/lib/store";
+import { useAccountStore, useSymbolStats, useUiStore, toast } from "@/lib/store";
 import { useMoney } from "@/lib/money";
 import { useQueryClient } from "@tanstack/react-query";
-import { fmtPrice, cls } from "@/lib/format";
+import { assetMarketLabel, fmtAsOf, fmtPrice, cls, isDerivativeSegment } from "@/lib/format";
 
 const RISK = { marginCallPct: 100, stopOutPct: 5 };
 
 export function OrderTicket() {
   const symbol = useUiStore((s) => s.activeSymbol);
   const advanced = useUiStore((s) => s.advanced);
-  const tick = useMarketStore((s) => s.ticks[symbol]);
+  const { tick } = useSymbolStats(symbol);
   const snapshot = useAccountStore((s) => s.snapshot);
   const account = useActiveAccount();
   const assetsQuery = useAssets();
@@ -40,9 +40,7 @@ export function OrderTicket() {
   useEffect(() => {
     if (!quickSide) return;
     setSide(quickSide);
-    const isDeriv =
-      !!asset?.segment && ["INDEX_FUTURES", "INDEX_OPTIONS", "STOCK_FUTURES", "STOCK_OPTIONS"].includes(asset.segment);
-    setLots(isDeriv ? "1" : "0.10");
+    setLots(isDerivativeSegment(asset?.segment) ? "1" : "0.10");
     setType("MARKET");
     setQuickSide(null);
   }, [quickSide, asset, setQuickSide]);
@@ -53,15 +51,17 @@ export function OrderTicket() {
 
   const qty = parseFloat(lots) || 0;
   const lev = asset?.leverage && asset.leverage > 0 ? asset.leverage : 1;
-  const refPrice = type === "LIMIT" && price ? parseFloat(price) : tick?.mid ?? 0;
+  const liveMid = tick?.mid ?? asset?.mid;
+  const hasLiveQuote = (tick?.mid ?? 0) > 0 || Boolean(asset && asset.quoteKind === "live" && (asset.mid ?? 0) > 0);
+  const refPrice = type === "LIMIT" && price ? parseFloat(price) : liveMid ?? 0;
 
-  const derivativeSegment =
-    !!asset?.segment && ["INDEX_FUTURES", "INDEX_OPTIONS", "STOCK_FUTURES", "STOCK_OPTIONS"].includes(asset.segment);
+  const derivativeSegment = isDerivativeSegment(asset?.segment);
+  const marketClosed = asset?.marketOpen === false;
+  const closeOnly = asset?.quoteKind === "close";
 
   const preview = useMemo(() => {
     if (!asset) return null;
-    const isDeriv =
-      !!asset.segment && ["INDEX_FUTURES", "INDEX_OPTIONS", "STOCK_FUTURES", "STOCK_OPTIONS"].includes(asset.segment);
+    const isDeriv = isDerivativeSegment(asset.segment);
     return previewOrder({
       side,
       qty,
@@ -140,18 +140,27 @@ export function OrderTicket() {
 
   const isBuy = side === "BUY";
   const actionSide: OrderSide = type === "STOP" ? (isBuy ? "SELL" : "BUY") : side;
-  const canSubmit = Boolean(asset) && qty > 0 && (preview ? preview.affordable : false);
+  const canSubmit =
+    Boolean(asset) && !marketClosed && hasLiveQuote && qty > 0 && (preview ? preview.affordable : false);
 
   return (
     <div className="flex h-full flex-col">
       <div className="flex items-center justify-between border-b border-line bg-navy2/60 px-3 py-2">
         <div className="min-w-0">
           <div className="num truncate text-sm font-bold">{symbol}</div>
-          <div className="truncate text-[11px] text-muted">{asset?.name ?? "—"}</div>
+          <div className="truncate text-[11px] text-muted">
+            {marketClosed
+              ? asset?.marketStatusReason ?? "Market closed"
+              : closeOnly
+                ? `Official NSE close${asset?.quoteAsOf ? ` · ${fmtAsOf(asset.quoteAsOf)}` : ""}`
+                : asset?.name ?? "-"}
+          </div>
         </div>
         <div className="shrink-0 text-right">
-          <div className="num text-sm">{fmtPrice(tick?.mid)}</div>
-          <div className="text-[10px] uppercase tracking-wider text-muted">{asset?.assetClass ?? ""}</div>
+          <div className="num text-sm">{fmtPrice(liveMid)}</div>
+          <div className="text-[10px] uppercase tracking-wider text-muted">
+            {closeOnly ? "CLOSE" : assetMarketLabel(asset?.assetClass ?? "", asset?.segment)}
+          </div>
         </div>
       </div>
 
@@ -181,13 +190,13 @@ export function OrderTicket() {
 
         {type === "LIMIT" && (
           <Field label={`Limit price (${isBuy ? "below" : "above"} market)`}>
-            <input className="input num" value={price} onChange={(e) => setPrice(e.target.value)} placeholder={fmtPrice(tick?.mid)} />
+            <input className="input num" value={price} onChange={(e) => setPrice(e.target.value)} placeholder={fmtPrice(liveMid)} />
           </Field>
         )}
         {type === "STOP" && (
           <>
             <Field label={`Stop-loss price (${isBuy ? "below" : "above"} market)`}>
-              <input className="input num" value={trigger} onChange={(e) => setTrigger(e.target.value)} placeholder={fmtPrice(tick?.mid)} />
+              <input className="input num" value={trigger} onChange={(e) => setTrigger(e.target.value)} placeholder={fmtPrice(liveMid)} />
             </Field>
             <p className="text-[11px] text-muted">
               Closes your <span className="text-ink">{side}</span> position when the price is hit.
@@ -229,12 +238,21 @@ export function OrderTicket() {
       </div>
 
       <div className="border-t border-line p-3">
+        {marketClosed && (
+          <p className="mb-2 text-[11px] text-brandbright">{asset.marketStatusReason ?? "Market is closed for this instrument."}</p>
+        )}
+        {!marketClosed && closeOnly && (
+          <p className="mb-2 text-[11px] text-muted">
+            Display-only official NSE close{asset.quoteAsOf ? ` as of ${fmtAsOf(asset.quoteAsOf)}` : ""}; a live quote is
+            required to place orders.
+          </p>
+        )}
         <button
           onClick={() => setConfirmOpen(true)}
           disabled={busy || !canSubmit}
           className={cls("w-full py-3 text-sm font-bold", actionSide === "BUY" ? "btn-buy" : "btn-sell")}
         >
-          {busy ? "Placing…" : `${actionSide} ${qty || ""} ${symbol}`}
+          {marketClosed ? "Market closed" : closeOnly ? "No live quote" : busy ? "Placing." : `${actionSide} ${qty || ""} ${symbol}`}
         </button>
       </div>
 

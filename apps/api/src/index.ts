@@ -21,6 +21,7 @@ import notificationRoutes from "./routes/notifications.js";
 import { startCandleWorker, stopCandleWorker } from "./services/candle.worker.js";
 import { startAlertWorker, stopAlertWorker } from "./services/alert.worker.js";
 import { startInstrumentSync } from "./services/instrument.service.js";
+import { startMarketCloseSync, stopMarketCloseSync } from "./services/market-close.service.js";
 
 async function main() {
   const app = Fastify({
@@ -103,6 +104,7 @@ async function main() {
   startCandleWorker();
   startAlertWorker();
   startInstrumentSync();
+  startMarketCloseSync();
   const registryTimer = setInterval(() => {
     void publishRegistry().catch(() => undefined);
   }, 30000);
@@ -114,6 +116,7 @@ async function main() {
     stopPnlWorker();
     stopCandleWorker();
     stopAlertWorker();
+    stopMarketCloseSync();
     await app.close();
     await prisma.$disconnect();
     process.exit(0);

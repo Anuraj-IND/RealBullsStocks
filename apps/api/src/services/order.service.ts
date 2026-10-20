@@ -18,6 +18,7 @@ import {
   getExecutableQuote,
   executablePrice,
   getQuote,
+  getQuoteForAsset,
   getBrokerage,
   brokerageForQty,
   isSegmentTradable,
@@ -28,7 +29,7 @@ import {
 } from "./market.service.js";
 import { postLedgerChangesWithin } from "./ledger.service.js";
 import { notifyAccountOwner } from "./notify.service.js";
-import { isMarketOpen } from "../lib/market-hours.js";
+import { isAssetMarketOpen } from "./market-status.service.js";
 
 const OPPOSITE: Record<OrderSide, OrderSide> = { BUY: "SELL", SELL: "BUY" };
 
@@ -44,7 +45,7 @@ async function accountUnrealized(accountId: string): Promise<number> {
   for (const p of positions) {
     const asset = await prisma.asset.findUnique({ where: { id: p.assetId } });
     if (!asset) continue;
-    const q = await getQuote(asset.symbol);
+    const q = await getQuoteForAsset(asset);
     const mark = q?.mid ?? D.num(p.avgEntryPrice);
     total += unrealizedPnl({
       side: p.side as OrderSide,
@@ -102,7 +103,7 @@ export async function placeOrder(params: {
   if (!(await isSegmentTradable(userId, tenantId, asset))) {
     throw badRequest("Trading is disabled for this market segment", "SEGMENT_DISABLED");
   }
-  if (!isMarketOpen(asset)) throw badRequest("Market is closed for this instrument", "MARKET_CLOSED");
+  if (!(await isAssetMarketOpen(asset))) throw badRequest("Market is closed for this instrument", "MARKET_CLOSED");
 
   if (isDerivativeSegment(resolveAssetSegment(asset))) {
     if (input.qty < 1 - 1e-9) throw badRequest("Minimum quantity is 1 lot", "INVALID_LOT");
@@ -112,9 +113,7 @@ export async function placeOrder(params: {
   const risk = await resolveRisk(userId, tenantId, asset, config);
   const leverage = risk.leverage;
 
-  const cached = await getQuote(asset.symbol);
-  const fallbackMid = cached?.mid ?? 100;
-  const quote = await getExecutableQuote(tenantId, asset, config, fallbackMid);
+  const quote = await getExecutableQuote(tenantId, asset, config);
 
   if (input.type === "LIMIT") {
     if (input.side === "BUY" && input.price! >= quote.ask) throw badRequest("A buy limit must be below the market price");
@@ -282,13 +281,12 @@ export async function closePosition(params: {
   if (position.status !== "OPEN") throw badRequest("Position is not open");
 
   const asset = await loadAsset(position.assetId);
-  if (enforceHours && !isMarketOpen(asset)) throw badRequest("Market is closed for this instrument", "MARKET_CLOSED");
+  if (enforceHours && !(await isAssetMarketOpen(asset))) throw badRequest("Market is closed for this instrument", "MARKET_CLOSED");
   const config = await getEffectiveConfig(position.tenantId, asset);
   const posAccount = await prisma.account.findUnique({ where: { id: accountId }, select: { userId: true } });
   const brokerage = await getBrokerage(posAccount?.userId ?? "", config);
   const isDerivative = isDerivativeSegment(resolveAssetSegment(asset));
-  const cached = await getQuote(asset.symbol);
-  const quote = await getExecutableQuote(position.tenantId, asset, config, cached?.mid ?? D.num(position.avgEntryPrice));
+  const quote = await getExecutableQuote(position.tenantId, asset, config);
   const exitPrice = executablePrice(OPPOSITE[position.side as OrderSide], quote);
 
   const totalQty = D.num(position.qty);
@@ -516,8 +514,16 @@ async function fillPendingOrder(orderId: string): Promise<void> {
   const isDerivative = isDerivativeSegment(resolveAssetSegment(asset));
   const brokerage = await getBrokerage(account.userId, config);
 
-  const cached = await getQuote(asset.symbol);
-  const quote = await getExecutableQuote(order.tenantId, asset, config, cached?.mid ?? D.num(order.price));
+  let quote: Awaited<ReturnType<typeof getExecutableQuote>>;
+  try {
+    quote = await getExecutableQuote(order.tenantId, asset, config);
+  } catch {
+    await prisma.order.update({
+      where: { id: orderId },
+      data: { status: "REJECTED", rejectReason: "No live price available at trigger" },
+    });
+    return;
+  }
   const fill = executablePrice(order.side as OrderSide, quote);
   const qty = D.num(order.qty);
   const contractSize = D.num(asset.contractSize);

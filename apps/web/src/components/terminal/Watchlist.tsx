@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { cls, fmtPrice } from "@/lib/format";
+import { assetMarketLabel, cls, fmtPrice, isDerivativeSegment } from "@/lib/format";
 import {
   useAssets,
   useWatchlist,
@@ -102,9 +102,15 @@ export function Watchlist() {
 
   const openQuick = (symbol: string, side: "BUY" | "SELL") => {
     const asset = assetsQuery.data?.assets.find((a) => a.symbol === symbol);
-    const isDeriv =
-      !!asset?.segment && ["INDEX_FUTURES", "INDEX_OPTIONS", "STOCK_FUTURES", "STOCK_OPTIONS"].includes(asset.segment);
-    setQuickQty(isDeriv ? "1" : "0.1");
+    if (asset?.marketOpen === false) {
+      toast.error("Market closed", asset.marketStatusReason ?? "This instrument is not trading right now");
+      return;
+    }
+    if (asset && asset.quoteKind !== "live") {
+      toast.error("No live quote", "Trading requires a live price; this is a closing price");
+      return;
+    }
+    setQuickQty(isDerivativeSegment(asset?.segment) ? "1" : "0.1");
     setQuick({ symbol, side });
     setActiveSymbol(symbol);
   };
@@ -114,6 +120,10 @@ export function Watchlist() {
     const asset = assetsQuery.data?.assets.find((a) => a.symbol === quick.symbol);
     if (!asset) {
       toast.error("Not ready", "Asset data is still loading");
+      return;
+    }
+    if (asset.quoteKind !== "live") {
+      toast.error("No live quote", "Trading requires a live price; this is a closing price");
       return;
     }
     const qty = parseFloat(quickQty);
@@ -355,7 +365,7 @@ export function Watchlist() {
                   <span className={cls("num font-medium", held ? "text-accent" : "text-green")}>
                     {held ? "✓" : "+"} {a.symbol}
                   </span>
-                  <span className="text-xs text-muted">{a.assetClass}</span>
+                  <span className="text-xs text-muted">{assetMarketLabel(a.assetClass, a.segment)}</span>
                 </button>
               );
             })}
@@ -380,6 +390,11 @@ export function Watchlist() {
             key={item.assetId}
             symbol={item.symbol}
             assetClass={item.assetClass}
+            segment={item.segment}
+            quoteKind={item.quoteKind}
+            mid={item.mid}
+            marketOpen={item.marketOpen}
+            marketStatusReason={item.marketStatusReason}
             active={item.symbol === activeSymbol}
             locked={!!assetsQuery.data && !availableSymbols.has(item.symbol)}
             onClick={() => selectSymbol(item.symbol)}
@@ -444,6 +459,11 @@ export function Watchlist() {
 function Row({
   symbol,
   assetClass,
+  segment,
+  quoteKind,
+  mid,
+  marketOpen,
+  marketStatusReason,
   active,
   locked,
   onClick,
@@ -454,6 +474,11 @@ function Row({
 }: {
   symbol: string;
   assetClass: string;
+  segment?: string;
+  quoteKind?: "live" | "close";
+  mid?: number;
+  marketOpen?: boolean;
+  marketStatusReason?: string;
   active: boolean;
   locked?: boolean;
   onClick: () => void;
@@ -463,6 +488,8 @@ function Row({
   onRemove?: () => void;
 }) {
   const { tick, changePct } = useSymbolStats(symbol);
+  const closed = marketOpen === false;
+  const price = tick?.mid ?? mid;
 
   return (
     <div
@@ -478,14 +505,27 @@ function Row({
         <div className="flex items-center gap-1.5">
           <span className="num truncate text-sm font-semibold">{symbol}</span>
           <span className="shrink-0 rounded bg-slate/60 px-1 py-px text-[9px] font-bold uppercase tracking-wide text-muted">
-            {assetClass}
+            {assetMarketLabel(assetClass, segment)}
           </span>
+          {quoteKind === "close" && (
+            <span
+              className="shrink-0 rounded bg-slate/60 px-1 py-px text-[9px] font-bold uppercase tracking-wide text-muted"
+              title="Official NSE closing price"
+            >
+              CLOSE
+            </span>
+          )}
+          {closed && (
+            <span className="shrink-0 rounded bg-brand/15 px-1 py-px text-[9px] font-bold uppercase tracking-wide text-brandbright" title={marketStatusReason}>
+              CLOSED
+            </span>
+          )}
         </div>
       </div>
 
       <div className="flex items-center gap-2">
         <div className="text-right">
-          <div className="num text-sm">{fmtPrice(tick?.mid)}</div>
+          <div className="num text-sm">{fmtPrice(price)}</div>
           <div className={cls("num text-[11px]", changePct >= 0 ? "text-up" : "text-down")}>
             {changePct >= 0 ? "+" : ""}
             {changePct.toFixed(2)}%
@@ -495,6 +535,17 @@ function Row({
           {locked ? (
             <span className="rounded bg-slate/70 px-2 py-1.5 text-[10px] font-bold leading-none text-muted">
               NO ACCESS
+            </span>
+          ) : closed ? (
+            <span
+              className="rounded bg-slate/70 px-2 py-1.5 text-[10px] font-bold leading-none text-muted"
+              title={marketStatusReason}
+            >
+              CLOSED
+            </span>
+          ) : quoteKind === "close" ? (
+            <span className="rounded bg-slate/70 px-2 py-1.5 text-[10px] font-bold leading-none text-muted" title="Closing price is display-only">
+              CLOSE
             </span>
           ) : (
             <>

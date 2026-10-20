@@ -4,6 +4,7 @@ import { authenticate } from "../plugins/auth.js";
 import { primaryAccount } from "../lib/accounts.js";
 import { toLedgerDTO } from "../lib/serialize.js";
 import { D } from "../lib/money.js";
+import { filledQtyByPosition } from "../lib/positions.js";
 
 export default async function ledgerRoutes(app: FastifyInstance) {
   app.addHook("preHandler", authenticate);
@@ -29,6 +30,7 @@ export default async function ledgerRoutes(app: FastifyInstance) {
       where: { accountId: account.id, status: { in: ["CLOSED", "LIQUIDATED"] } },
       orderBy: { closedAt: "asc" },
     });
+    const originalQty = await filledQtyByPosition(closed.map((p) => p.id));
 
     let wins = 0;
     let losses = 0;
@@ -84,7 +86,7 @@ export default async function ledgerRoutes(app: FastifyInstance) {
       tradeLog: closed.slice(-50).reverse().map((p) => ({
         id: p.id,
         side: p.side,
-        qty: D.num(p.qty),
+        qty: originalQty.get(p.id) ?? D.num(p.qty),
         entry: D.num(p.avgEntryPrice),
         exit: p.closedPrice ? D.num(p.closedPrice) : null,
         realizedPnl: D.num(p.realizedPnl),

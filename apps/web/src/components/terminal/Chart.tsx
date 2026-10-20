@@ -9,10 +9,10 @@ import {
   type ISeriesApi,
   type UTCTimestamp,
 } from "lightweight-charts";
-import { useMarketStore, useUiStore } from "@/lib/store";
+import { useSymbolStats, useUiStore } from "@/lib/store";
 import { useAssets } from "@/lib/hooks";
 import { apiGet } from "@/lib/api";
-import { cls } from "@/lib/format";
+import { cls, fmtPrice } from "@/lib/format";
 
 type ChartKind = "candles" | "heikin" | "line";
 
@@ -52,11 +52,13 @@ export function Chart() {
   const haRef = useRef<{ open: number; close: number } | null>(null);
 
   const symbol = useUiStore((s) => s.activeSymbol);
-  const tick = useMarketStore((s) => s.ticks[symbol]);
+  const { tick } = useSymbolStats(symbol);
   const assets = useAssets();
-  const assetId = assets.data?.assets.find((a) => a.symbol === symbol)?.id;
+  const asset = assets.data?.assets.find((a) => a.symbol === symbol);
+  const assetId = asset?.id;
   const [kind, setKind] = useState<ChartKind>("candles");
   const [tf, setTf] = useState<number>(60);
+  const [empty, setEmpty] = useState(true);
 
   useEffect(() => {
     import("@/lib/ws").then(({ ws }) => ws.subscribeSymbols([symbol]));
@@ -66,6 +68,7 @@ export function Chart() {
     if (!containerRef.current) return;
     bucketRef.current = null;
     haRef.current = null;
+    setEmpty(true);
 
     const precision = precisionFor(symbol);
     const chart = createChart(containerRef.current, {
@@ -111,11 +114,14 @@ export function Chart() {
     const stf = serverTf(tf);
     if (!assetId || !stf || !seriesRef.current) return;
     let cancelled = false;
+    (seriesRef.current as ISeriesApi<"Candlestick">).setData([]);
+    setEmpty(true);
     apiGet<{ candles: Array<{ time: number; open: number; high: number; low: number; close: number }> }>(
       `/assets/${assetId}/candles?timeframe=${stf}&limit=500`,
     )
       .then((r) => {
         if (cancelled || !seriesRef.current || r.candles.length === 0) return;
+        setEmpty(false);
         if (kind === "line") {
           (seriesRef.current as ISeriesApi<"Line">).setData(r.candles.map((c) => ({ time: c.time as UTCTimestamp, value: c.close })));
         } else {
@@ -133,6 +139,7 @@ export function Chart() {
 
   useEffect(() => {
     if (!tick || !seriesRef.current) return;
+    setEmpty(false);
     const t = tick.mid;
     const bucketTime = Math.floor(Date.now() / 1000 / tf) * tf;
 
@@ -200,7 +207,19 @@ export function Chart() {
           ))}
         </div>
       </div>
-      <div ref={containerRef} className="min-h-0 flex-1" />
+      <div className="relative min-h-0 flex-1">
+        <div ref={containerRef} className="absolute inset-0" />
+        {empty && (
+          <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center gap-1 text-center">
+            <span className="text-sm font-semibold text-muted">No chart history</span>
+            <span className="max-w-xs text-[11px] text-muted">
+              {asset?.quoteKind === "close" && asset.mid
+                ? `Official NSE close ${fmtPrice(asset.mid)}. Historical candles will appear only from live ticks.`
+                : "Candles build from live ticks only; no synthetic history is shown."}
+            </span>
+          </div>
+        )}
+      </div>
     </div>
   );
 }

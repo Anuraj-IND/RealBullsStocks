@@ -26,11 +26,18 @@ export interface AssetRow {
   leverage: number;
   
   segment?: string;
+  marketOpen?: boolean;
+  marketStatusReason?: string;
+  marketStatusSource?: string;
   marginCallPct?: number;
   stopOutPct?: number;
   bid?: number;
   ask?: number;
   mid?: number;
+  ts?: number;
+  quoteSource?: "redis" | "close";
+  quoteKind?: "live" | "close";
+  quoteAsOf?: number;
 }
 
 export interface WatchlistItem {
@@ -38,9 +45,18 @@ export interface WatchlistItem {
   symbol: string;
   name: string;
   assetClass: string;
+  segment?: string;
+  feedSource?: string;
+  marketOpen?: boolean;
+  marketStatusReason?: string;
+  marketStatusSource?: string;
   bid?: number;
   ask?: number;
   mid?: number;
+  ts?: number;
+  quoteSource?: "redis" | "close";
+  quoteKind?: "live" | "close";
+  quoteAsOf?: number;
 }
 
 export function useAssets() {

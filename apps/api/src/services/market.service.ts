@@ -5,20 +5,10 @@ import { prisma } from "../lib/prisma.js";
 import { redis, priceKey } from "../lib/redis.js";
 import { env } from "../env.js";
 import { D } from "../lib/money.js";
+import { badRequest } from "../lib/errors.js";
+import { getNseMarketStatus, getNseTradingHolidays } from "./market-status.service.js";
 
-
-const SEED_PRICES: Record<string, number> = {
-  BTCUSDT: 67000, ETHUSDT: 3500, SOLUSDT: 150, XRPUSDT: 0.52,
-  EURUSD: 1.085, GBPUSD: 1.271, USDJPY: 151.2, AUDUSD: 0.659,
-  XAUUSD: 2320, XAGUSD: 27.4, USOIL: 78.5,
-  AAPL: 214, TSLA: 182, NVDA: 118, MSFT: 425,
-  US500: 5450, NAS100: 19800,
-  NIFTY50: 24350, BANKNIFTY: 52100, SENSEX: 79900, FINNIFTY: 23600,
-  RELIANCE: 2960, TCS: 4120, INFY: 1830, HDFCBANK: 1685, ICICIBANK: 1195,
-  SBIN: 815, BHARTIARTL: 1540, ITC: 442, LT: 3580, TATAMOTORS: 985,
-  "NIFTY50-FUT": 24350, "BANKNIFTY-FUT": 52100, "RELIANCE-FUT": 2960, "TCS-FUT": 4120,
-  "NIFTY-24400-CE": 120, "NIFTY-24400-PE": 90, "BANKNIFTY-52000-CE": 250, "RELIANCE-3000-CE": 40,
-};
+const MAX_QUOTE_AGE_MS = 5 * 60 * 1000;
 
 export interface EffectiveConfig {
   enabled: boolean;
@@ -37,34 +27,29 @@ export interface RiskProfile {
 }
 
 
-function optionStartPrice(a: Asset, underlying: number): number | null {
-  if (!a.optionType || underlying <= 0) return null;
-  const strike = a.strike ? Number(a.strike) : 0;
-  if (strike <= 0) return null;
-  const intrinsic = a.optionType === "CE" ? underlying - strike : strike - underlying;
-  return Math.max(intrinsic, 0) + underlying * 0.008;
-}
-
 export async function publishRegistry(): Promise<void> {
   const assets = await prisma.asset.findMany({ where: { enabled: true } });
   const tokens = assets.map((a) => a.instrumentToken).filter((t): t is string => Boolean(t));
   const instruments = tokens.length
     ? await prisma.instrument.findMany({
         where: { instrumentToken: { in: tokens } },
-        select: { instrumentToken: true, lastPrice: true, exchange: true, tradingsymbol: true },
+        select: { instrumentToken: true, exchange: true, tradingsymbol: true },
       })
     : [];
+  // Keep the status and holiday calls sequential: NSE rate-limits concurrent
+  // requests from the same IP, which otherwise drops the holiday description.
+  const marketStatus = await getNseMarketStatus();
+  const holidays = await getNseTradingHolidays();
   const byToken = new Map(instruments.map((i) => [i.instrumentToken, i]));
   const payload = {
+    holidays,
+    marketStatus,
     assets: assets.map((a) => {
       const inst = a.instrumentToken ? byToken.get(a.instrumentToken) : undefined;
-      const livePrice = inst ? Number(inst.lastPrice) : 0;
-      const underlyingPrice = SEED_PRICES[a.baseCurrency ?? ""] ?? 0;
-      const derived = optionStartPrice(a, underlyingPrice);
       return {
         symbol: a.symbol,
         feedSource: a.feedSource,
-        startPrice: livePrice > 0 ? livePrice : SEED_PRICES[a.symbol] ?? derived ?? 100,
+        startPrice: 0,
         assetClass: a.assetClass,
         quoteCurrency: a.quoteCurrency,
         segment: a.segment,
@@ -78,16 +63,48 @@ export async function publishRegistry(): Promise<void> {
   await redis.set(env.registryKey, JSON.stringify(payload));
 }
 
-export async function getQuote(symbol: string): Promise<{ bid: number; ask: number; mid: number } | null> {
+export async function getQuote(
+  symbol: string,
+): Promise<{ bid: number; ask: number; mid: number; ts?: number } | null> {
   const raw = await redis.get(priceKey(symbol));
   if (!raw) return null;
   try {
-    const t = JSON.parse(raw) as { bid: number; ask: number; mid: number };
+    const t = JSON.parse(raw) as { bid: number; ask: number; mid: number; ts?: number };
     if (typeof t.mid !== "number") return null;
     return t;
   } catch {
     return null;
   }
+}
+
+export interface AssetQuote {
+  bid: number;
+  ask: number;
+  mid: number;
+  ts?: number;
+  asOf?: number;
+  source: "redis" | "close";
+  kind: "live" | "close";
+}
+
+export async function getQuoteForAsset(asset: Asset): Promise<AssetQuote | null> {
+  const quote = await getQuote(asset.symbol);
+  if (quote && quote.mid > 0 && quote.ts && Date.now() - quote.ts <= MAX_QUOTE_AGE_MS) {
+    return { ...quote, source: "redis", kind: "live", asOf: quote.ts };
+  }
+
+  const close = await prisma.marketClose.findUnique({ where: { assetId: asset.id } });
+  if (!close) return null;
+  const price = Number(close.price);
+  if (price <= 0) return null;
+  return {
+    bid: price,
+    ask: price,
+    mid: price,
+    asOf: close.asOf.getTime(),
+    source: "close",
+    kind: "close",
+  };
 }
 
 export async function getEffectiveConfig(tenantId: string, asset: Asset): Promise<EffectiveConfig> {
@@ -120,12 +137,8 @@ export function resolveAssetSegment(asset: Asset): string {
 
 
 export function isDerivativeSegment(segment: string): boolean {
-  return (
-    segment === "INDEX_FUTURES" ||
-    segment === "INDEX_OPTIONS" ||
-    segment === "STOCK_FUTURES" ||
-    segment === "STOCK_OPTIONS"
-  );
+  const upper = segment.toUpperCase();
+  return upper.includes("FUT") || upper.includes("OPT");
 }
 
 
@@ -216,9 +229,12 @@ export async function getExecutableQuote(
   tenantId: string,
   asset: Asset,
   config: EffectiveConfig,
-  fallbackMid: number,
 ): Promise<{ bid: number; ask: number; mid: number }> {
-  const q = (await getQuote(asset.symbol)) ?? { bid: fallbackMid, ask: fallbackMid, mid: fallbackMid };
+  const q = await getQuote(asset.symbol);
+  if (!q || q.mid <= 0) throw badRequest("No live quote available for this instrument", "NO_QUOTE");
+  if (!q.ts || Date.now() - q.ts > MAX_QUOTE_AGE_MS) {
+    throw badRequest("Live quote is stale for this instrument", "STALE_QUOTE");
+  }
   const { bid, ask } = quotedSpread({
     mid: q.mid,
     spreadMarkupBps: config.spreadMarkupBps,

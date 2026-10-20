@@ -15,13 +15,9 @@ import { useAuthStore, useUiStore } from "@/lib/store";
 import { cls } from "@/lib/format";
 
 const TAPE = [
-  "EURUSD", "GBPUSD", "USDJPY",
-  "BTCUSDT", "ETHUSDT", "SOLUSDT",
-  "XAUUSD", "USOIL",
-  "US500", "NAS100",
-  "NIFTY50", "BANKNIFTY", "SENSEX",
-  "RELIANCE", "TCS", "INFY", "HDFCBANK",
-  "AAPL", "TSLA", "NVDA",
+  "BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT",
+  "NIFTY50", "BANKNIFTY", "FINNIFTY",
+  "RELIANCE", "TCS", "HDFCBANK",
 ];
 
 export default function TerminalPage() {

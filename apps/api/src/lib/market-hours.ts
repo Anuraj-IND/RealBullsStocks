@@ -1,9 +1,20 @@
 import type { Asset } from "@realbulls/db";
+import { isNseTradingHoliday } from "@realbulls/shared";
 
 
+// Local session rules are the last-resort fallback. NSE status comes from the
+// broker/exchange status API (see market-status.service.ts); the holiday list
+// below is only used when that API and its cache are both unavailable.
 function localClock(nowMs: number, offsetMinutes: number): { minutes: number; day: number } {
   const d = new Date(nowMs + offsetMinutes * 60000);
   return { minutes: d.getUTCHours() * 60 + d.getUTCMinutes(), day: d.getUTCDay() };
+}
+
+function localDateKey(nowMs: number, offsetMinutes: number): string {
+  const d = new Date(nowMs + offsetMinutes * 60000);
+  const month = String(d.getUTCMonth() + 1).padStart(2, "0");
+  const day = String(d.getUTCDate()).padStart(2, "0");
+  return `${d.getUTCFullYear()}-${month}-${day}`;
 }
 
 const IST = 330; 
@@ -24,10 +35,14 @@ export function isMarketOpen(
 
   if (cls === "INDEX" || cls === "STOCK") {
     const indian = asset.quoteCurrency === "INR";
-    const { minutes, day } = localClock(nowMs, indian ? IST : ET);
+    const offset = indian ? IST : ET;
+    const { minutes, day } = localClock(nowMs, offset);
     if (day < 1 || day > 5) return false;
-    if (indian) return minutes >= 9 * 60 + 15 && minutes <= 15 * 60 + 30; 
-    return minutes >= 9 * 60 + 30 && minutes <= 16 * 60; 
+    if (indian) {
+      if (isNseTradingHoliday(localDateKey(nowMs, offset))) return false;
+      return minutes >= 9 * 60 + 15 && minutes < 15 * 60 + 30;
+    }
+    return minutes >= 9 * 60 + 30 && minutes < 16 * 60;
   }
 
   return true;

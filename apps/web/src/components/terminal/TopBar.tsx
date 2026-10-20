@@ -41,7 +41,7 @@ export function TopBar() {
 
   return (
     <>
-      <header className="flex items-center justify-between gap-2 border-b border-line bg-navy2/90 px-3 py-2 backdrop-blur md:gap-4 md:px-4">
+      <header className="flex items-center justify-between gap-2 border-b border-line bg-navy2 px-3 py-2 md:gap-4 md:px-4">
         <div className="flex min-w-0 items-center gap-3 md:gap-6">
           <Link href="/terminal" className="shrink-0" title="Go to terminal">
             <Logo />

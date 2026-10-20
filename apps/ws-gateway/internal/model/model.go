@@ -21,8 +21,18 @@ type AssetDef struct {
 	Tradingsymbol   string  `json:"tradingsymbol"`
 }
 
+type MarketStatus struct {
+	Open      bool   `json:"open"`
+	Reason    string `json:"reason"`
+	Source    string `json:"source"`
+	AsOf      int64  `json:"asOf"`
+	TradeDate string `json:"tradeDate"`
+}
+
 type Registry struct {
-	Assets []AssetDef `json:"assets"`
+	Holidays     []string      `json:"holidays"`
+	MarketStatus *MarketStatus `json:"marketStatus"`
+	Assets       []AssetDef    `json:"assets"`
 }
 
 type ClientMessage struct {

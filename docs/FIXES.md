@@ -5,6 +5,19 @@ Newest session first.
 
 ---
 
+## 2026-10-20 — Removed synthetic market data
+
+- Deleted the synthetic Go feed and its market-hours fallback. The gateway now
+  publishes only Binance, TwelveData and Kite ticks.
+- NSE/NFO quotes use a fresh live tick or the latest official NSE bhavcopy close.
+- Orders require a fresh live quote; closed markets return `MARKET_CLOSED`.
+- Removed synthetic asset/watchlist seeds and reset local demo orders, positions
+  and ledger balances.
+- NSE close ingestion now maps FO contracts by `FinInstrmNm`, CM by `TckrSymb`,
+  parses ISO trade dates, and covers all nine NFO assets.
+
+---
+
 ## 2026-10-20 — Deployment hardening and production runbook
 
 - Added `.dockerignore` so `apps/api/.env`, `apps/web/.env.local`, `infra/.env`,

@@ -43,7 +43,10 @@ export function NotificationsBell() {
       {open && (
         <>
           <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} aria-hidden />
-          <div className="absolute right-0 top-full z-50 mt-1 w-80 border border-line bg-navy2 shadow-panel">
+          <div
+            className="absolute right-0 top-full z-50 mt-1 w-80 isolate border border-line bg-navy2 shadow-[0_16px_40px_rgba(0,0,0,0.65)]"
+            style={{ backgroundColor: "rgb(8 13 22)" }}
+          >
             <div className="flex items-center justify-between border-b border-line px-3 py-2">
               <span className="text-[11px] font-semibold uppercase tracking-wider text-muted">{t("common.notifications")}</span>
               <div className="flex items-center gap-3">

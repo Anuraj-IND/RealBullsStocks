@@ -25,8 +25,6 @@ The gateway reads variables from the process environment (no `.env` loader).
 | `REDIS_URL` | `redis://localhost:6379` | Redis |
 | `REGISTRY_KEY` | `realbulls:registry` | registry published by the API (symbols + start prices) |
 | `BINANCE_SYMBOLS` | `""` | crypto symbols to mirror |
-| `SYNTHETIC_ENABLED` | `true` | generate synthetic GBM ticks for unfed symbols |
-| `TICK_THROTTLE_MS` | `250` | synthetic publish cadence |
 | `TWELVEDATA_API_KEY` | `""` | Twelve Data key (forex/commodities) |
 | `TWELVEDATA_SYMBOLS` | built-in list | `INTERNAL=NSE:SYMBOL` pairs |
 | `TWELVEDATA_POLL_MS` | `60000` | poll interval |
@@ -35,7 +33,8 @@ The gateway reads variables from the process environment (no `.env` loader).
 | `ZERODHA_POLL_MS` | `30000` | poll interval |
 
 The Zerodha feed also requires `zerodha:access_token` in Redis (set by the API
-after broker login). Without it the gateway falls back to synthetic ticks.
+after broker login). Without it, NSE/NFO assets use the latest official close
+and orders remain blocked until the broker is connected.
 
 
 ## Endpoints

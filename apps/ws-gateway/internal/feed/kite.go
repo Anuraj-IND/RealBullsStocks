@@ -122,6 +122,9 @@ func (k *Kite) fetch(ctx context.Context) {
 	if err != nil || token == "" {
 		return
 	}
+	if !k.marketOpen(ctx) {
+		return
+	}
 
 	reqKeys, byKey := k.targets(ctx)
 	if len(reqKeys) == 0 {
@@ -134,6 +137,14 @@ func (k *Kite) fetch(ctx context.Context) {
 		}
 		k.fetchChunk(ctx, token, reqKeys[start:end], byKey)
 	}
+}
+
+func (k *Kite) marketOpen(ctx context.Context) bool {
+	reg, err := k.store.Registry(ctx, k.registryKey)
+	if err != nil || reg == nil || reg.MarketStatus == nil {
+		return true
+	}
+	return reg.MarketStatus.Open
 }
 
 func (k *Kite) fetchChunk(ctx context.Context, token string, keys []string, byKey map[string]string) {
@@ -161,7 +172,9 @@ func (k *Kite) fetchChunk(ctx context.Context, token string, keys []string, byKe
 	var parsed struct {
 		Status string `json:"status"`
 		Data   map[string]struct {
-			LastPrice float64 `json:"last_price"`
+			LastPrice     float64 `json:"last_price"`
+			LastTradeTime string  `json:"last_trade_time"`
+			Timestamp     string  `json:"timestamp"`
 		} `json:"data"`
 	}
 	if err := json.Unmarshal(body, &parsed); err != nil {
@@ -183,12 +196,39 @@ func (k *Kite) fetchChunk(ctx context.Context, token string, keys []string, byKe
 		}
 		const halfSpread = 0.3 / 10000
 		places := pricePlaces(internal)
+		ts := kiteTimestamp(qd.LastTradeTime)
+		if ts <= 0 {
+			ts = kiteTimestamp(qd.Timestamp)
+		}
+		if ts <= 0 {
+			ts = time.Now().UnixMilli()
+		}
 		k.manager.Publish(ctx, model.Tick{
 			Symbol: internal,
 			Bid:    round(qd.LastPrice*(1-halfSpread), places),
 			Ask:    round(qd.LastPrice*(1+halfSpread), places),
 			Mid:    round(qd.LastPrice, places),
-			Ts:     time.Now().UnixMilli(),
+			Ts:     ts,
 		})
 	}
+}
+
+// kiteTimestamp parses the quote's own exchange timestamp so a closed market
+// keeps its real last-trade time instead of looking freshly updated.
+func kiteTimestamp(raw string) int64 {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return 0
+	}
+	layouts := []string{
+		time.RFC3339Nano,
+		"2006-01-02T15:04:05-0700",
+		"2006-01-02 15:04:05",
+	}
+	for _, layout := range layouts {
+		if t, err := time.ParseInLocation(layout, raw, time.FixedZone("IST", 330*60)); err == nil {
+			return t.UnixMilli()
+		}
+	}
+	return 0
 }

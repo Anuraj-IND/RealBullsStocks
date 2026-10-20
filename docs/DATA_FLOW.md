@@ -23,10 +23,9 @@ flowchart TD
       Binance[Binance WS]
       Twelve[TwelveData REST]
       Kite[Zerodha Kite REST]
-      Synthetic[Synthetic GBM]
     end
 
-    Binance & Twelve & Kite & Synthetic -->|model.Tick| Gateway[ws-gateway]
+    Binance & Twelve & Kite -->|model.Tick| Gateway[ws-gateway]
     Gateway -->|PUBLISH ticks:SYM + SET realbulls:price:SYM| Redis[(Redis)]
     Gateway -->|accounts:* / notify:*| Redis
 
@@ -88,10 +87,10 @@ sequenceDiagram
 2. `store.New(ctx, cfg.RedisURL)` — Redis connect + ping; fatal on failure.
 3. `st.WaitReady(ctx)` — 10s readiness poll.
 4. `server.NewHub(st)`; `hub.RunFanout(ctx, "ticks:*", "accounts:*", "notify:*")` goroutine.
-5. `feed.NewManager(st)`; conditionally add Binance / TwelveData / Kite / Synthetic feeds.
+5. `feed.NewManager(st)`; conditionally add Binance / TwelveData / Kite feeds.
 6. `go manager.Start(ctx)`; `server.New(hub)`; `srv.ListenAndServe(ctx, ":8080")`.
 
-Fallback seeds (18–46): 28 hardcoded `feed.Spec` entries. `syntheticSpecs()` (105–157) reads `realbulls:registry` from Redis, excludes symbols already covered by other feeds, maps `Underlying`+`UnderlyingStartPrice` for derivatives. `filterSpecs()` (159–168) removes covered symbols.
+Only configured providers start. The gateway reads `realbulls:registry` for market status and symbols; there is no generated fallback feed.
 
 ### Feed adapters (`internal/feed/`)
 
@@ -100,7 +99,6 @@ Fallback seeds (18–46): 28 hardcoded `feed.Spec` entries. `syntheticSpecs()` (
 | `binance.go` | Binance `bookTicker` | WebSocket `wss://stream.binance.com:9443` | none (mid only) | Reconnect backoff 1s→30s |
 | `twelvedata.go` | `api.twelvedata.com/quote` | REST poll (60s, batch 30) | 5 bps | Forex/commodity/NSE |
 | `kite.go` | `api.kite.trade/quote` | REST poll (30s) | 3 bps | Uses `zerodha:access_token` from Redis |
-| `synthetic.go` | GBM walk | Ticker (250ms) | 1.5 bps | Derivatives track underlying ratio |
 
 All feeds normalize to `model.Tick{Symbol, Bid, Ask, Mid, Ts}` and call `Manager.Publish` → `store.PublishTick`.
 
@@ -124,7 +122,7 @@ All feeds normalize to `model.Tick{Symbol, Bid, Ask, Mid, Ts}` and call `Manager
 
 **Candle worker** (`services/candle.worker.ts`): every 2000ms reads quotes for enabled assets and upserts `Candle` rows for M1/M5/M15/H1 (5–47). `GET /assets/:id/candles` serves them.
 
-**Registry**: API writes `realbulls:registry` at boot (`index.ts:100`, `market.service.ts:40–54`); the gateway reads it to build synthetic specs.
+**Registry**: API writes `realbulls:registry` at boot; the gateway reads it for symbols and market status.
 
 ---
 
@@ -248,7 +246,7 @@ All in-process `setInterval` loops started in `index.ts:101–103`, stopped on S
 | pnl.worker | `accounts:<accountId>` | hub → WS clients (byAccount) |
 | notify.service | `notify:<userId>` | hub → WS clients (byUser) |
 
-API reads: `realbulls:price:<SYMBOL>`, `realbulls:registry`, `zerodha:*`, `login:fail:*`.
+**Registry**: API writes `realbulls:registry` at boot; the gateway reads it for symbols and market status.
 
 ---
 
@@ -324,7 +322,7 @@ API reads: `realbulls:price:<SYMBOL>`, `realbulls:registry`, `zerodha:*`, `login
 | `ticks:<SYMBOL>` (channel) | gateway | hub fan-out |
 | `accounts:<accountId>` (channel) | API pnl.worker | hub fan-out |
 | `notify:<userId>` (channel) | API notify.service | hub fan-out |
-| `realbulls:registry` | API at boot | gateway synthetic specs |
+| `realbulls:registry` | API at boot | gateway symbols and market status |
 | `zerodha:access_token` / `user_id` / `connected_at` | broker.ts | kite.go |
 | `login:fail:{identifier}:{ip}` | auth.ts | auth.ts |
 

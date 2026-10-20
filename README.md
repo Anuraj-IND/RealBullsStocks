@@ -38,11 +38,11 @@ Multi-asset trading terminal — real-time charts, market depth, margin/leverage
                                                 │ ticks / registry
                         ┌───────────────────────┴──────────────┐
                         │  ws-gateway (Go, :8080)              │
-                        │  Binance · TwelveData · Kite · synth │
+                        |  Binance . TwelveData . Kite        |
                         └──────────────────────────────────────┘
 ```
 
-Feeds: Binance (crypto), Twelve Data (forex/commodities), Zerodha Kite Connect (NSE/BSE), plus a built-in GBM simulator for any symbol without a live feed.
+Feeds: Binance (crypto), Twelve Data (forex/commodities), Zerodha Kite Connect (NSE/BSE). Unconfigured providers are omitted; there is no simulator.
 
 ## Stack
 
@@ -100,7 +100,7 @@ export DATABASE_URL='postgresql://realbulls:realbulls@localhost:5432/realbulls?s
 #    Windows PowerShell
 $env:DATABASE_URL='postgresql://realbulls:realbulls@localhost:5432/realbulls?schema=public'
 
-# 5. Create the schema and seed demo data
+# 5. Create the schema and seed real assets
 pnpm db:generate
 pnpm db:push
 pnpm db:seed
@@ -114,11 +114,11 @@ environment (it does not load a `.env` file):
 
 ```bash
 # macOS / Linux
-REDIS_URL=redis://localhost:6379 BINANCE_SYMBOLS=btcusdt,ethusdt SYNTHETIC_ENABLED=true \
+REDIS_URL=redis://localhost:6379 BINANCE_SYMBOLS=btcusdt,ethusdt \
   go run ./cmd/gateway   # run from apps/ws-gateway
 
 # Windows PowerShell
-$env:REDIS_URL='redis://localhost:6379'; $env:BINANCE_SYMBOLS='btcusdt,ethusdt'; $env:SYNTHETIC_ENABLED='true'
+$env:REDIS_URL='redis://localhost:6379'; $env:BINANCE_SYMBOLS='btcusdt,ethusdt'
 go run ./cmd/gateway       # run from apps/ws-gateway
 ```
 
@@ -193,8 +193,9 @@ curl -X POST http://localhost:4000/instruments/sync -H "Authorization: Bearer <t
 curl http://localhost:4000/instruments/status
 ```
 
-Live option/equity quotes need a Zerodha Kite access token; without it the
-gateway serves synthetic ticks so search, charts, orders and P&L still work.
+Live option/equity quotes need a Zerodha Kite access token. Without it, NSE/NFO
+assets show the latest official close and cannot place orders until a live token is
+connected.
 
 ## Environment variables
 
@@ -241,8 +242,6 @@ the result.
 | `REDIS_URL` | `redis://localhost:6379` | Redis connection |
 | `REGISTRY_KEY` | `realbulls:registry` | Registry key to read |
 | `BINANCE_SYMBOLS` | _(empty)_ | Crypto symbols to mirror |
-| `SYNTHETIC_ENABLED` | `true` | Generate GBM ticks without live feeds |
-| `TICK_THROTTLE_MS` | `250` | Synthetic publish cadence |
 | `TWELVEDATA_API_KEY` / `TWELVEDATA_SYMBOLS` / `TWELVEDATA_POLL_MS` | _(empty)_ / defaults / `60000` | Forex/commodities (`INTERNAL=EXTERNAL` maps) |
 | `ZERODHA_API_KEY` / `ZERODHA_SYMBOLS` / `ZERODHA_POLL_MS` | _(empty)_ / defaults / `30000` | Kite quotes (`INTERNAL=EXTERNAL` maps) |
 

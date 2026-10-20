@@ -12,12 +12,10 @@ type SymbolMap struct {
 }
 
 type Config struct {
-	Port             string
-	RedisURL         string
-	BinanceSymbols   []string
-	SyntheticEnabled bool
-	TickThrottleMS   int
-	RegistryKey      string
+	Port           string
+	RedisURL       string
+	BinanceSymbols []string
+	RegistryKey    string
 
 	TwelveDataKey     string
 	TwelveDataPollMS  int
@@ -87,8 +85,6 @@ func Load() Config {
 		Port:              getenv("WS_PORT", "8080"),
 		RedisURL:          getenv("REDIS_URL", "redis://localhost:6379"),
 		BinanceSymbols:    splitCSV(getenv("BINANCE_SYMBOLS", "")),
-		SyntheticEnabled:  getenv("SYNTHETIC_ENABLED", "true") == "true",
-		TickThrottleMS:    getint("TICK_THROTTLE_MS", 250),
 		RegistryKey:       getenv("REGISTRY_KEY", "realbulls:registry"),
 		TwelveDataKey:     getenv("TWELVEDATA_API_KEY", ""),
 		TwelveDataPollMS:  getint("TWELVEDATA_POLL_MS", 60000),

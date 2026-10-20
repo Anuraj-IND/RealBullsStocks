@@ -16,6 +16,7 @@ import { postLedgerChanges } from "../services/ledger.service.js";
 import { getQuote } from "../services/market.service.js";
 import { closePosition } from "../services/order.service.js";
 import { D } from "../lib/money.js";
+import { filledQtyByPosition } from "../lib/positions.js";
 
 const canAdmin = ["SUPER_ADMIN", "TENANT_ADMIN"] as const;
 
@@ -337,6 +338,10 @@ export default async function adminRoutes(app: FastifyInstance) {
       take,
     });
 
+    const originalQty = await filledQtyByPosition(
+      trades.filter((p) => p.status !== "OPEN").map((p) => p.id),
+    );
+
     const summary = trades.reduce(
       (acc, p) => {
         acc.realizedPnl += D.num(p.realizedPnl);
@@ -360,7 +365,7 @@ export default async function adminRoutes(app: FastifyInstance) {
         symbol: p.asset.symbol,
         assetClass: p.asset.assetClass,
         side: p.side,
-        qty: D.num(p.qty),
+        qty: p.status === "OPEN" ? D.num(p.qty) : (originalQty.get(p.id) ?? D.num(p.qty)),
         leverage: p.leverage,
         entry: D.num(p.avgEntryPrice),
         exit: p.closedPrice ? D.num(p.closedPrice) : null,
@@ -485,6 +490,10 @@ export default async function adminRoutes(app: FastifyInstance) {
       prisma.userLeverageOverride.findMany({ where: { userId: id, assetId: null, assetClass: null, segment: { not: null } } }),
     ]);
 
+    const originalQty = await filledQtyByPosition(
+      trades.filter((p) => p.status !== "OPEN").map((p) => p.id),
+    );
+
     const segments: Record<string, number> = {};
     for (const o of overrides) if (o.segment) segments[o.segment] = o.leverage;
 
@@ -552,7 +561,7 @@ export default async function adminRoutes(app: FastifyInstance) {
         symbol: p.asset.symbol,
         assetClass: p.asset.assetClass,
         side: p.side,
-        qty: D.num(p.qty),
+        qty: p.status === "OPEN" ? D.num(p.qty) : (originalQty.get(p.id) ?? D.num(p.qty)),
         leverage: p.leverage,
         entry: D.num(p.avgEntryPrice),
         exit: p.closedPrice ? D.num(p.closedPrice) : null,
@@ -615,9 +624,12 @@ export default async function adminRoutes(app: FastifyInstance) {
       orderBy: { updatedAt: "desc" },
       take: 5000,
     });
+    const originalQty = await filledQtyByPosition(
+      trades.filter((p) => p.status !== "OPEN").map((p) => p.id),
+    );
     const rows = trades.map((p) => [
       p.account.user.username ?? p.account.user.email, p.account.user.displayName ?? "", p.asset.symbol, p.side,
-      D.num(p.qty), p.leverage, D.num(p.avgEntryPrice), p.closedPrice ? D.num(p.closedPrice) : "",
+      p.status === "OPEN" ? D.num(p.qty) : (originalQty.get(p.id) ?? D.num(p.qty)), p.leverage, D.num(p.avgEntryPrice), p.closedPrice ? D.num(p.closedPrice) : "",
       D.num(p.marginUsed), D.num(p.commission), D.num(p.realizedPnl), D.num(p.unrealizedPnl), p.status,
       p.openedAt.toISOString(), p.closedAt?.toISOString() ?? "",
     ]);

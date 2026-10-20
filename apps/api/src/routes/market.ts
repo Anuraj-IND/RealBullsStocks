@@ -7,11 +7,16 @@ import { notFound, badRequest, forbidden } from "../lib/errors.js";
 import { toAssetDTO } from "../lib/serialize.js";
 import { requireTenant } from "../lib/tenant.js";
 import { D } from "../lib/money.js";
-import { getEffectiveConfig, getQuote, resolveRisk, resolveAssetSegment } from "../services/market.service.js";
+import { getEffectiveConfig, getQuoteForAsset, resolveRisk, resolveAssetSegment } from "../services/market.service.js";
 import { ensureAssetForInstrument } from "../services/instrument.service.js";
+import { getNseMarketStatus, marketStatusForAsset } from "../services/market-status.service.js";
 
 export default async function marketRoutes(app: FastifyInstance) {
   app.addHook("preHandler", authenticate);
+
+  app.get("/market/status", async () => {
+    return { nse: await getNseMarketStatus() };
+  });
 
   app.get("/assets", async (request) => {
     const tenant = await requireTenant(request);
@@ -29,7 +34,7 @@ export default async function marketRoutes(app: FastifyInstance) {
       if (allowed.length > 0 && !allowed.includes(assetSegment)) continue;
       const config = await getEffectiveConfig(tenant.id, a);
       const risk = await resolveRisk(request.auth!.sub, tenant.id, a, config);
-      const quote = await getQuote(a.symbol);
+      const [quote, status] = await Promise.all([getQuoteForAsset(a), marketStatusForAsset(a)]);
       result.push({
         ...toAssetDTO(a, {
           spreadMarkupBps: config.spreadMarkupBps,
@@ -38,10 +43,23 @@ export default async function marketRoutes(app: FastifyInstance) {
         }),
         enabled: config.enabled,
         segment: assetSegment,
+        marketOpen: status.open,
+        marketStatusReason: status.reason,
+        marketStatusSource: status.source,
         leverage: risk.leverage,
         marginCallPct: risk.marginCallPct,
         stopOutPct: risk.stopOutPct,
-        ...(quote ?? {}),
+        ...(quote
+          ? {
+              bid: quote.bid,
+              ask: quote.ask,
+              mid: quote.mid,
+              ts: quote.ts,
+              quoteSource: quote.source,
+              quoteKind: quote.kind,
+              quoteAsOf: quote.asOf,
+            }
+          : {}),
       });
     }
     return { assets: result };
@@ -51,9 +69,16 @@ export default async function marketRoutes(app: FastifyInstance) {
     const { id } = request.params as { id: string };
     const asset = await prisma.asset.findUnique({ where: { id } });
     if (!asset) throw notFound("Asset not found");
-    const quote = await getQuote(asset.symbol);
+    const [quote, status] = await Promise.all([getQuoteForAsset(asset), marketStatusForAsset(asset)]);
     if (!quote) throw notFound("No quote available for symbol");
-    return { symbol: asset.symbol, ...quote };
+    return {
+      symbol: asset.symbol,
+      marketOpen: status.open,
+      marketStatusReason: status.reason,
+      marketStatusSource: status.source,
+      feedSource: asset.feedSource,
+      ...quote,
+    };
   });
 
   app.get("/assets/:id/candles", async (request) => {
@@ -83,8 +108,29 @@ export default async function marketRoutes(app: FastifyInstance) {
     for (const wl of watchlists) {
       const items = [];
       for (const item of wl.items) {
-        const quote = await getQuote(item.asset.symbol);
-        items.push({ assetId: item.assetId, symbol: item.asset.symbol, name: item.asset.name, assetClass: item.asset.assetClass, ...(quote ?? {}) });
+        const [quote, status] = await Promise.all([getQuoteForAsset(item.asset), marketStatusForAsset(item.asset)]);
+        items.push({
+          assetId: item.assetId,
+          symbol: item.asset.symbol,
+          name: item.asset.name,
+          assetClass: item.asset.assetClass,
+          segment: item.asset.segment,
+          feedSource: item.asset.feedSource,
+          marketOpen: status.open,
+          marketStatusReason: status.reason,
+          marketStatusSource: status.source,
+          ...(quote
+            ? {
+                bid: quote.bid,
+                ask: quote.ask,
+                mid: quote.mid,
+                ts: quote.ts,
+                quoteSource: quote.source,
+                quoteKind: quote.kind,
+                quoteAsOf: quote.asOf,
+              }
+            : {}),
+        });
       }
       out.push({ id: wl.id, name: wl.name, items });
     }

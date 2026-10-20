@@ -26,9 +26,11 @@ services:
     image: redis:7-alpine
     container_name: realbulls-redis
     restart: unless-stopped
-    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    command: ["redis-server", "--save", "", "--appendonly", "yes", "--appendfsync", "everysec"]
     ports:
       - "127.0.0.1:6379:6379"
+    volumes:
+      - realbulls-redis:/data
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
@@ -105,8 +107,6 @@ services:
       REDIS_URL: redis://redis:6379
       REGISTRY_KEY: ${REGISTRY_KEY:-realbulls:registry}
       BINANCE_SYMBOLS: ${BINANCE_SYMBOLS:-}
-      SYNTHETIC_ENABLED: ${SYNTHETIC_ENABLED:-true}
-      TICK_THROTTLE_MS: "250"
       TWELVEDATA_API_KEY: ${TWELVEDATA_API_KEY:-}
       TWELVEDATA_SYMBOLS: ${TWELVEDATA_SYMBOLS:-}
       TWELVEDATA_POLL_MS: ${TWELVEDATA_POLL_MS:-60000}
@@ -128,13 +128,15 @@ services:
       args:
         NEXT_PUBLIC_SITE_URL: https://${PUBLIC_HOST:-localhost}
         NEXT_PUBLIC_ROOT_DOMAIN: ${ROOT_DOMAIN:-app.example.com}
-        NEXT_PUBLIC_API_URL: /api
-        NEXT_PUBLIC_WS_URL: wss://${PUBLIC_HOST:-localhost}/ws
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-/api}
+        NEXT_PUBLIC_WS_URL: ${NEXT_PUBLIC_WS_URL:-wss://${PUBLIC_HOST:-localhost}/ws}
     image: realbulls-web:latest
     container_name: realbulls-web
     restart: unless-stopped
     environment:
       NODE_ENV: production
+      HOSTNAME: 0.0.0.0
+      PORT: "3000"
       ROOT_DOMAIN: ${ROOT_DOMAIN:-app.example.com}
       API_INTERNAL_URL: http://api:4000
       NEXT_PUBLIC_SITE_URL: https://${PUBLIC_HOST:-localhost}

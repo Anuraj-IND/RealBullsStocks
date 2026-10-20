@@ -147,17 +147,12 @@ No I/O; consumed by the API. Unit-tested (`test/engine.test.ts`).
 | Function | Line | Purpose |
 |---|---|---|
 | `main` | 48 | Config → store → hub → feeds → server |
-| `syntheticSpecs` | 105 | Build synthetic instrument list from registry |
-| `filterSpecs` | 159 | Remove covered symbols |
 
 ### `internal/feed/`
 | Function | File:line | Purpose |
 |---|---|---|
 | `Manager.Publish` | `feed.go:52` | Update last price + `PublishTick` |
-| `Manager.LastPrice` | `feed.go:59` | Underlying ratio for derivatives |
-| `NewSynthetic` / `Run` | `synthetic.go:42,90` | GBM walk + market-hours gating |
-| `pricePlaces` | `synthetic.go:145` | Per-symbol decimal places |
-| `marketOpen` | `market_hours.go:5` | Asset-class hours check |
+| `pricePlaces` | `prices.go` | Per-symbol decimal places |
 
 ### `internal/server/`
 | Function | File:line | Purpose |

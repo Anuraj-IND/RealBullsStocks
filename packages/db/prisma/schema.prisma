@@ -268,7 +268,7 @@ model Asset {
   tickSize       Decimal    @default(0.01) @db.Decimal(24, 8)
   minQty         Decimal    @default(0.01) @db.Decimal(24, 8)
   maxLeverage    Int        @default(100)
-  feedSource     String     @default("synthetic") 
+  feedSource     String     @default("")
   instrumentToken String?   @unique
   expiry         DateTime?
   strike         Decimal?   @db.Decimal(24, 8)
@@ -282,8 +282,21 @@ model Asset {
   positions      Position[]
   watchlistItems WatchlistItem[]
   priceAlerts    PriceAlert[]
+  marketClose    MarketClose?
 
   @@index([assetClass, enabled])
+}
+
+model MarketClose {
+  assetId   String   @id
+  price     Decimal  @db.Decimal(24, 8)
+  asOf      DateTime
+  source    String
+  updatedAt DateTime @updatedAt
+
+  asset     Asset    @relation(fields: [assetId], references: [id], onDelete: Cascade)
+
+  @@index([asOf])
 }
 
 model Instrument {

@@ -181,7 +181,6 @@ POSTGRES_PASSWORD=<openssl rand -hex 24>
 
 REGISTRY_KEY=realbulls:registry
 BINANCE_SYMBOLS=btcusdt,ethusdt,solusdt,xrpusdt
-SYNTHETIC_ENABLED=true
 
 TWELVEDATA_API_KEY=
 TWELVEDATA_SYMBOLS=EURUSD=EUR/USD,GBPUSD=GBP/USD,USDJPY=USD/JPY,AUDUSD=AUD/USD,XAUUSD=XAU/USD
@@ -335,7 +334,7 @@ password. Confirm:
 - `/admin` loads and the Users table shows P&L,
 - a test order can be placed and appears in positions/order history,
 - `https://app.example.com/api/health` returns `{"status":"ok",...}`,
-- live/synthetic ticks arrive on the terminal.
+- live crypto ticks arrive and NSE assets show official closes.
 
 If you do not want the seeded demo balances or tenants, adjust them from the
 admin UI before inviting real users.
@@ -493,12 +492,12 @@ docker compose exec -T redis redis-cli --scan --pattern 'login:fail:*' \
   | xargs -r docker compose exec -T redis redis-cli del
 ```
 
-**Zerodha quotes are synthetic**
+**Zerodha quotes require a broker token**
 
 The gateway needs a Kite access token in Redis. Set `ZERODHA_API_KEY`,
 `ZERODHA_API_SECRET` and `ZERODHA_REDIRECT`, connect the broker from the UI, then
-check `docker compose logs ws-gateway`. Without a token the synthetic feed is
-used by design.
+check `docker compose logs ws-gateway`. Without a token, NSE/NFO assets show the
+latest official close and order entry stays blocked until the broker is connected.
 
 **Disk full / image load fails**
 
