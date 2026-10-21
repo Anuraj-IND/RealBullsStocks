@@ -54,3 +54,7 @@ desktop.ini
 .vscode/
 *.swp
 *~
+
+# --- Reference Docs (Internal Documentation) ---
+reference-docs/
+reference-docs.zip
