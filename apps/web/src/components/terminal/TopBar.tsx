@@ -16,8 +16,6 @@ import { hasStoredSession, getRefreshToken, apiPost } from "@/lib/api";
 export function TopBar() {
   const { user, activeAccountId, clear } = useAuthStore();
   const connected = useConnectionStore((s) => s.connected);
-  const currency = useUiStore((s) => s.currency);
-  const setCurrency = useUiStore((s) => s.setCurrency);
   const { t } = useI18n();
   const pathname = usePathname();
   const [menuOpen, setMenuOpen] = useState(false);
@@ -63,22 +61,6 @@ export function TopBar() {
         <div className="flex min-w-0 shrink items-center gap-2 md:gap-4">
           <div className="hidden sm:block">
             <MarketClock />
-          </div>
-          <div className="flex items-center border border-line">
-            <button
-              onClick={() => setCurrency("USD")}
-              className={cls("px-2 py-1 text-xs", currency === "USD" ? "bg-accent/15 text-accent" : "text-muted hover:text-ink")}
-              title="Show amounts in USD"
-            >
-              $<span className="hidden sm:inline"> USD</span>
-            </button>
-            <button
-              onClick={() => setCurrency("INR")}
-              className={cls("px-2 py-1 text-xs", currency === "INR" ? "bg-accent/15 text-accent" : "text-muted hover:text-ink")}
-              title="Show amounts in INR"
-            >
-              ₹<span className="hidden sm:inline"> INR</span>
-            </button>
           </div>
           <NotificationsBell />
 

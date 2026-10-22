@@ -11,6 +11,8 @@ import {
 } from "lightweight-charts";
 import { useSymbolStats, useUiStore } from "@/lib/store";
 import { useAssets } from "@/lib/hooks";
+import { USD_INR } from "@/lib/money";
+import { toDisplayPrice, displayDigits } from "@realbulls/engine";
 import { apiGet } from "@/lib/api";
 import { cls } from "@/lib/format";
 
@@ -57,6 +59,12 @@ export function Chart() {
   const assets = useAssets();
   const asset = assets.data?.assets.find((a) => a.symbol === symbol);
   const assetId = asset?.id;
+  const quoteCurrency = asset?.quoteCurrency;
+  // Market terms → display (₹) terms. INR passes through; USDT ×83.5.
+  const toDisplay = (v: number): number => {
+    const d = toDisplayPrice(v, quoteCurrency, USD_INR);
+    return d.kind === "empty" ? v : d.value;
+  };
   const [kind, setKind] = useState<ChartKind>("candles");
   const [tf, setTf] = useState<number>(60);
   const [empty, setEmpty] = useState(true);
@@ -72,9 +80,8 @@ export function Chart() {
     lastHistoricalRef.current = null;
     setEmpty(true);
 
-    const precision = precisionFor(symbol);
-    const chart = createChart(containerRef.current, {
-      layout: {
+    const precision = quoteCurrency === "INR" || !quoteCurrency ? precisionFor(symbol) : 2;
+    const chart = createChart(containerRef.current, {      layout: {
         background: { type: ColorType.Solid, color: "transparent" },
         textColor: "#7C8EA8",
         fontFamily: "var(--font-mono)",
@@ -110,11 +117,11 @@ export function Chart() {
       chartRef.current = null;
       seriesRef.current = null;
     };
-  }, [kind, symbol, tf]);
+  }, [kind, symbol, tf, quoteCurrency]);
 
   useEffect(() => {
     const stf = serverTf(tf);
-    if (!assetId || !stf || !seriesRef.current) return;
+    if (!assetId || !stf || !seriesRef.current || !quoteCurrency) return;
     let cancelled = false;
     (seriesRef.current as ISeriesApi<"Candlestick">).setData([]);
     bucketRef.current = null;
@@ -127,14 +134,22 @@ export function Chart() {
       .then((r) => {
         if (cancelled || !seriesRef.current || r.candles.length === 0) return;
         setEmpty(false);
+        const cvt = (c: { time: number; open: number; high: number; low: number; close: number }) => ({
+          time: c.time as UTCTimestamp,
+          open: toDisplay(c.open),
+          high: toDisplay(c.high),
+          low: toDisplay(c.low),
+          close: toDisplay(c.close),
+        });
         const last = r.candles[r.candles.length - 1];
-        if (last) lastHistoricalRef.current = { time: last.time, close: last.close };
+        if (last) lastHistoricalRef.current = { time: last.time, close: toDisplay(last.close) };
+        // Precision follows the converted magnitude (₹68L → 2dp).
+        const series = seriesRef.current as ISeriesApi<"Candlestick">;
+        series.applyOptions({ priceFormat: priceFormat(displayDigits(toDisplay(last?.close ?? 0))) });
         if (kind === "line") {
-          (seriesRef.current as ISeriesApi<"Line">).setData(r.candles.map((c) => ({ time: c.time as UTCTimestamp, value: c.close })));
+          (seriesRef.current as ISeriesApi<"Line">).setData(r.candles.map((c) => ({ time: c.time as UTCTimestamp, value: toDisplay(c.close) })));
         } else {
-          (seriesRef.current as ISeriesApi<"Candlestick">).setData(
-            r.candles.map((c) => ({ time: c.time as UTCTimestamp, open: c.open, high: c.high, low: c.low, close: c.close })),
-          );
+          (seriesRef.current as ISeriesApi<"Candlestick">).setData(r.candles.map(cvt));
         }
         chartRef.current?.timeScale().fitContent();
       })
@@ -142,12 +157,12 @@ export function Chart() {
     return () => {
       cancelled = true;
     };
-  }, [assetId, tf, kind]);
+  }, [assetId, tf, kind, quoteCurrency]);
 
   useEffect(() => {
-    if (!tick || !seriesRef.current) return;
+    if (!tick || !seriesRef.current || !quoteCurrency) return;
     setEmpty(false);
-    const t = tick.mid;
+    const t = toDisplay(tick.mid);
     const bucketTime = Math.floor(Date.now() / 1000 / tf) * tf;
 
     if (kind === "line") {
@@ -190,7 +205,7 @@ export function Chart() {
         close: bucket.c,
       });
     }
-  }, [tick, kind, tf]);
+  }, [tick, kind, tf, quoteCurrency]);
 
   return (
     <div className="flex h-full flex-col">

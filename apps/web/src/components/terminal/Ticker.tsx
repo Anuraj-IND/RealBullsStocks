@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { cls, fmtPrice } from "@/lib/format";
+import { cls, fmtMarket } from "@/lib/format";
 import { useMarketStore } from "@/lib/store";
 import { useAssets } from "@/lib/hooks";
 import { ws } from "@/lib/ws";
@@ -36,11 +36,12 @@ export function Ticker({ symbols }: { symbols: string[] }) {
           const t = raw && raw.ts && Date.now() - raw.ts <= 5 * 60 * 1000 ? raw : undefined;
           const p = prev[symbol];
           const chg = t && p ? ((t.mid - p) / p) * 100 : 0;
-          const mid = t?.mid ?? assets.data?.assets.find((a) => a.symbol === symbol)?.mid;
+          const asset = assets.data?.assets.find((a) => a.symbol === symbol);
+          const mid = t?.mid ?? asset?.mid;
           return (
             <span key={`${symbol}-${i}`} className="inline-flex items-center gap-2 text-xs">
               <span className="num font-semibold text-ink/90">{symbol}</span>
-              <span className="num text-muted">{fmtPrice(mid)}</span>
+              <span className="num text-muted">{fmtMarket(mid, asset?.quoteCurrency)}</span>
               <span className={cls("num", chg >= 0 ? "text-up" : "text-down")}>
                 {t ? `${chg >= 0 ? "▲" : "▼"} ${Math.abs(chg).toFixed(2)}%` : ""}
               </span>

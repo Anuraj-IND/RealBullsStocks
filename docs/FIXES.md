@@ -5,6 +5,393 @@ Newest session first.
 
 ---
 
+## 2026-10-22 — No stale data in any calculation (fallback audit)
+
+- Removed fresh-stamps on stale data: bridge + Kite ticker no longer
+  `Date.now()`-stamp quoteless responses — they skip, so the last honest
+  snapshot keeps its real age and STALE_QUOTE keeps gating fills.
+- `accountUnrealized` mark ladder is now fresh (<5min) → last cached (any
+  age) → entry-only-if-never-quoted. A dark position marks at its last
+  price, never a silent zero that would hide a live loss from margin checks.
+- Audited the rest, all safe as-is: `runRiskCycle` skips quoteless symbols;
+  fills throw NO_QUOTE/STALE_QUOTE past 5min (SL path included — a stale
+  trigger aborts at the gated close); ticket preview is advisory with the
+  server as enforcer; chart history join is display-only.
+- Verified live: BTC 0.2s, crude printing ~1/sec via ticker.
+
+---
+
+## 2026-10-22 — Full ₹ ledger migration (×83.5) + 27/27 panel validation
+
+- Ledger is rupees end to end: `quoteToUsd` → `quoteToInr` (INR×1,
+  foreign×83.5), brokerage passthrough (no more ÷83.5), web money identity,
+  notify payloads `{amountInr}`, ₹ error strings, `baseCurrency: "INR"` on
+  all create paths + seed, signup default ₹83,50,000.
+- One-shot migration with the API stopped: accounts/positions/ledger ×83.5
+  (9/34/346 rows), notification JSON converted, append-only trigger lifted
+  inside the tx and proven restored (UPDATE still raises). Fee configs,
+  prices, qtys, percents untouched. Guard refuses re-run.
+- Validation: every panel via API across 3 profiles — login, me, assets
+  (BTC market-$, crude as-is), watchlists, orders+history, positions+history
+  (equity identity, ₹ commissions), ledger walk == balance to the paise,
+  analytics identity, alerts, broker, notifications (structured live),
+  admin users/summary/trades/positions/ledger, trader4510 = ₹26,412.62
+  exact, plus a live 1-lot close (realized exact, ₹3.00 both legs).
+  27 PASS, 0 FAIL (2 first-run FAILs were test-authoring bugs, system clean).
+
+---
+
+## 2026-10-22 — ₹-only UI (dollar purge, display phase)
+
+- Currency switch deleted (TopBar + AdminConsole); store pinned to INR,
+  stale `rb_currency=USD` scrubbed on hydrate; `money.*` hardcodes ₹.
+- New `fmtMarket(price, quoteCurrency)`: INR as-is, USD/USDT ×83.5, foreign
+  ratios plain with no symbol, unresolved → "—". Applied to every price
+  surface (ticker, header, book, tape, watchlist, chart candles + live edge
+  with converted precision, ticket, positions/history/orders, analytics,
+  alerts, all admin cells). Inputs (limit/stop/SL/TP/alerts) typed in ₹,
+  converted back tick-rounded on submit — API untouched (market terms).
+- Notifications carry structured `{amountUsd, price, quoteCurrency}` (new
+  nullable `data` column, additive); bell/center/toasts render ₹ with a
+  legacy-text fallback. API margin errors now read ₹. SEO + help copy fixed.
+- Verified: engine 30/30, all typechecks clean, zero `$`/USD in web+api
+  sources outside symbol names, live 1-lot close (commission exact,
+  structured notif live end to end).
+
+---
+
+## 2026-10-22 — Indian markets now tick-by-tick (Kite WS ticker, REST retired)
+
+- Kite REST polling (2s) replaced with the WS ticker (`wss://ws.kite.trade`,
+  Zerodha's `gokiteconnect`): FULL-mode subscription to every registry
+  instrument token (16 live), resync every 30s for newly added symbols, token
+  re-read on every reconnect (survives the 6am rotation). Same dual-write as
+  every feed; exchange timestamps preserved (tradability gates unaffected).
+- Verified live 17:52 IST (MCX open): all 16 symbols publishing, median gap
+  0ms; crude payloads show real advancing exchange prints
+  (…750→…751→…758, mid 9443→9447). NSE validates at the 9:15 open.
+- Quote-bridge retuned to pure gap-filler (stale gate 1.5s → 8s, above the
+  ticker cadence) so it never races live ticks; old REST poller deleted.
+- Incidents along the way: box DNS flapped (both Kite + Binance unreachable
+  for minutes — both feeds self-recovered); fixed a nil-Conn panic where the
+  resync loop could fire while disconnected (connected-flag guard).
+
+---
+
+## 2026-10-22 — Crypto is now per-trade tick-by-tick (aggTrade + bookTicker)
+
+- The 2.5s "delay" on BTC was upstream silence (no best bid/ask change, so
+  Binance sent nothing) plus 2s REST sampling — the pipeline itself has no
+  timers (`ReadMessage` → publish instantly; earlier it carried 100+/sec).
+- Gateway now subscribes `aggTrade` alongside `bookTicker` per symbol: every
+  printed trade publishes a tick immediately (real bid/ask kept from the
+  book, trade price as mid). Verified live: **651 BTC publishes in 12s,
+  median gap 1ms, max 725ms**. This is the physical speed limit — silence
+  between prints means no trades happened, not lag.
+
+---
+
+## 2026-10-22 — Terminal Balance is now live walk-away money
+
+- The header Balance cell shows live equity (settled + open P&L, breathing
+  every tick) with the settled ledger balance as a sub-caption. Display-only:
+  the stored balance, ledger trail, margin math and the 95% trigger are
+  untouched (making the stored balance move would double-count inside margin
+  level and the trigger).
+
+---
+
+## 2026-10-22 — Live margin hold + no-stale-balance (stacking protection)
+
+- Ticket `freeMarginAfter` is now true free funds (balance + live P&L −
+  locked margin − requirement), not raw balance minus requirement — a second
+  position prices off the first one's live hold. Test updated to the new rule.
+- Affordability re-checked *inside* the fill transaction (market + pending
+  fills) with `FOR UPDATE` serialization — closes the race that once filled
+  an order on a negative balance.
+- Session (TopBar balance/margin) now refreshes after every fill/close/
+  close-all/quick-order — it previously loaded once at login and sat stale.
+  Ticket fallbacks reordered to WS snapshot → positions summary (3s) →
+  session, so unrealized can never silently price as 0 while positions move.
+- Verified live: 1-lot open locks $113.62 + live −$1.14 in the summary the
+  ticket reads; 1000-lot rejected ("need 113628.74"); close posts +$1.26 and
+  /me returns balance $10,100.87 + margin 0.
+
+- All accounts ACTIVE (house×2 SUSPENDED by design); admin + riskprobe
+  logins tested OK; rahul actively trading, others with recent IPs.
+- trader4510's ₹76,596 (vs restored ₹8.76L) traced to a legit 12:24Z admin
+  WITHDRAWAL of $9,580.84 — no new raw postings, incident closed.
+- 95% path re-validated: all 5 `quoteToUsd` sites intact, single writer
+  (`docker ps -a` empty, one :4000 listener), rahul's live ETH mark matches
+  independent math to 0.0005 (2.79% vs 95% trigger), converted close legs
+  proven post-exit. A repeat needs another pre-conversion writer — none exists.
+- Freshness: BTC 0.3s, crude ~8s (exchange trade-time), positions 1s/3s.
+  NSE dark = market closed.
+
+---
+
+## 2026-10-22 — Post-exit validation: accounts, 95% path, no-stale-data
+
+- Stopped `realbulls-api/-web/-ws` first (raw-math writer dead), then migrated
+  fully: Kite token rescued from container redis → Memurai 6379 (verified);
+  host API repointed to 6379 (broker still connected, quotes flowing);
+  database pg_dumped (12.8MB) → portable PG16 initdb/restore with exact
+  counts (ledger 254, positions 26, users 9) → cut over to localhost:5432;
+  native Go gateway on 8080 for Binance (BTC sub-second again, Kite stays on
+  the quote-bridge); `compose down` — zero containers remain.
+- Verified post-exit: 32 assets, crude ticking, burn-in 1-lot crude close
+  posts converted legs (commission $0.03592814 = 2×₹1.5/83.5).
+- trader4510 restored +$20,596.43 (raw postings $21,088.51 vs true $492.08).
+  Overrides left at 10000/10000 — now converting correctly ($119.76/leg).
+- Reboot notes: Memurai auto-starts (service); Postgres needs
+  `pg_ctl -D D:\realbulls-infra\data -l D:\realbulls-infra\pg.log start`;
+  gateway needs `go run ./cmd/gateway` with the Binance env; API runs in its
+  terminal as before. Backups: `D:\realbulls-infra-dump.sql`,
+  `C:\Users\anura\AppData\Local\Temp\opencode\kite-token.txt`.
+
+---
+
+## 2026-10-22 — Full Docker exit (native Postgres + Memurai + native gateway)
+
+---
+
+## 2026-10-22 — Stale Docker API auto-closed live positions with pre-conversion math (−₹19.5L day)
+
+- Two 1-lot crude closes posted **raw INR values as USD**: realized
+  −$594.28/−$494.23 (true −$7.12/−$5.92) and close commission $10,000.00
+  (true $119.76 for the ₹10,000/lot override) — booked Day P&L −₹19.5L on
+  ~₹500/position of real market movement.
+- Root cause is operational, not formula: host PG is shared with the stale
+  `realbulls-api` container (image built Oct 20, pre-`quoteToUsd`). Its risk
+  worker sees INR-asset unrealized **83.5× inflated**, so the 95% auto-close
+  trips on healthy positions within seconds and books them with raw math.
+  Proven by `MARGIN_CALL / Positions auto-closed` notifications 18ms/46ms
+  after each close, exact-figure fingerprints ($10,000.00, −594.28), and a
+  full ledger walk ($407 → +$16 → +$255 → −$10,238 → −$10,358 → +$420 →
+  +$300 → −$10,294). USD assets (BTC) are immune — no conversion involved.
+- Collateral findings: 11:06/11:08 positions survived (manual close won the
+  race / marks stayed above the raw threshold); an 11:16:26 open filled with
+  −$10k balance (affordability race — request in flight before the close
+  committed); one close is stamped 1.5s before its open (container/host
+  clock step, sequence proven by refIds + notifications).
+- Fix is operational: stop the stale stack (`docker stop realbulls-api
+  realbulls-web realbulls-ws`, keep redis/postgres) so only the converting
+  host API writes; then restore the account via ledger adjust. Do NOT top up
+  before stopping — the ₹9L grant was eaten in 27s the same way.
+
+---
+
+## 2026-10-22 — Search expiry badge: group-based MONTHLY/WEEKLY (was +7-day guess)
+
+- `Watchlist.tsx` tagged expiries MONTHLY vs WEEKLY by adding 7 days and
+  checking for a month-boundary cross — wrong once NSE moved expiries to
+  Tuesday plus holiday shifts (TCS Nov 2026 monthly moved Mon 23rd for Guru
+  Nanak Jayanti; 23+7=30 Nov stayed in-month → mislabeled WEEKLY).
+- New rule, computed over the whole search result set: group rows by
+  (exchange, underlying, calendar month); the LAST expiry in each group is
+  MONTHLY, earlier ones WEEKLY. Verified: TCS Oct/Nov/Dec → 3× MONTHLY;
+  synthetic NIFTY weeklies → WEEKLY with last-of-month MONTHLY. Generic for
+  any searched underlying — no symbol lists.
+
+---
+
+## 2026-10-22 — True 2s live quotes (quote-bridge cadence + gateway aligned)
+
+- The bridge polled Kite every 10s but only refreshed symbols whose cached
+  snapshot was >30s old — every displayed price was effectively ~30s stale
+  even while the WS fanout to the browser is instant. The stale gate, not
+  the poll, was the latency.
+- New defaults: bridge poll 2s, stale gate 1.5s (`QUOTE_BRIDGE_POLL_MS` /
+  `QUOTE_BRIDGE_STALE_MS`, clamped ≥1s/0.5s; template updated). Stale < poll
+  ⇒ every cycle refreshes every registered symbol — quotes are at most one
+  poll old end to end: Kite → bridge → Redis dual-write → gateway `ticks:*`
+  fanout → browser. The chart's live candle, ticket, watchlist and P&L all
+  paint straight from WS ticks (rAF-batched), so there is no display-side
+  lag; crypto (Binance WS) remains sub-second.
+- Gateway aligned: its Kite poller default dropped 30s → 2s
+  (`ZERODHA_POLL_MS`, compose + `infra/.env` updated) and the Go clamp that
+  silently forced any poll <5s back to 30s now floors at 1s (→2s), so the
+  two Kite loops can never overwrite each other with stale ticks once the
+  gateway's container DNS is fixed. TwelveData default 60s → 15s (one
+  batched req/poll stays inside free-plan limits; feed still off — no key).
+- Per-feed cadence (single reference): crypto = Binance WS sub-second;
+  all Indian (NSE/MCX/FNO) = Kite REST every 2s via bridge (+ gateway once
+  healthy); forex/metals = TwelveData every 15s when keyed, otherwise dark.
+- Hardening alongside: in-flight guard prevents overlapping cycles when a
+  Kite response is slow; 250ms pause between >500-instrument chunks keeps
+  the bridge under Kite's quote rate limits (~0.5 req/s at 16 symbols).
+- Verified live (03:00 IST, markets closed): every registry symbol
+  (CRUDEOIL/NATURALGAS FUT+OPT, NIFTY/stock FUT+OPT, …) publishes on
+  `ticks:*` every 2.0s; crypto (Binance) remains sub-second. Closed markets
+  republish the same last price with the exchange's real ts, so
+  tradability gates (STALE_QUOTE) still work unchanged.
+
+---
+
+## 2026-10-22 — 15-second minimum holding period on manual closes
+
+- Replaces the earlier hold-and-fill model: a manually closed position must
+  be at least `MIN_HOLD_MS` old (default 15s, env-overridable), otherwise the
+  close is rejected with `422 POSITION_TOO_NEW` + remaining seconds; aged
+  positions close instantly. By close time quotes have refreshed, so stale
+  ticks can't be exploited. Risk-engine closes (SL/TP, liquidation,
+  auto-close) and admin force-close bypass the gate; close-all closes aged
+  rows and reports `skipped` with per-row waits.
+- UI: instant `Hold on / You can close in Xs` toast on young positions
+  (client pre-check from `openedAt`; server re-enforces), partial close-all
+  reports who still needs time. Verified live: instant close → 422
+  `Wait 15s…`; after 16s → 0.1s fill.
+
+---
+
+## 2026-10-22 — Brokerage is rupees: converted + defaults for new assets
+
+- Fee config (per-lot/per-order, incl. user overrides) is rupee-denominated
+  but entered USD math raw. Converted at the single choke point
+  (`getBrokerage` → USD) and in the ticket preview — same pattern as prices.
+- Gap found alongside: instrument-created assets (e.g. crude) have no
+  `AssetConfig` row, so brokerage was silently 0. `getEffectiveConfig` now
+  falls back to seed parity (FOREX 3.5, COMMODITY 1.5 per lot); explicit 0
+  still respected. Verified: crude → ₹1.5/lot → $0.01796 → displays ₹1.50.
+
+- `previewOrder`: `requiredMargin = notional/leverage + fee`,
+  `freeMarginAfter = balance − requiredMargin`. Acceptance check unchanged in
+  effect (still true free funds) — only the quoted figures follow the new
+  formulas. Margin storage/ledger untouched (fee stays a separate COMMISSION
+  posting, margin stays releasable collateral). Rejection message updated.
+- Per-order brokerage is charged on open AND close (incl. stop-loss closes,
+  same `closePosition` path), so required margin now holds **2× fee**.
+  Verified live: ₹100/order → open $1.1976 + close $1.1976 = $2.39521 total.
+- Verified live (crude @ 9200): notional $11,017.96, required $1,103.30
+  ($1,101.80 + $1.50 fee), freeAfter $8,896.70. Engine 23/23, api+web clean.
+
+- All 32 `Asset.maxLeverage` rows → 500 (one-off update); seed rows and
+  `ensureAssetForInstrument` now default 500 so it sticks. Rules/floors
+  untouched — they still bind below the ceiling.
+- Verified: `trader4510`/BTC → **500** (dormant override now live);
+  `trader`/BTC → 20, `AXISBANK` → 20 (rules bind, unchanged).
+- Side effects to know: with caps at 500, global rules now bind where the
+  old cap did — NFO futures 10 → **200** (global INDEX rule), MCX 10 → **100**
+  (global COMMODITY rule). Say the word to pin those back with explicit
+  rules if 10x should stay their default.
+
+- Symptom: admin set `CRYPTO 1:500` for `trader4510@realbulls.local`, ticket
+  showed `1:20`. Trace proved the override row was stored and matched
+  correctly — `resolveRisk()` clamped it via `min(…, asset.maxLeverage = 20)`.
+- Decision: reverted the override-wins experiment; caps always win
+  (`market.service.ts` back to HEAD state). The 500 row stays dormant in the
+  DB. Platform max remains 20 unless caps themselves are raised.
+- Cap-20 trace, all green: `trader4510`/BTC → 20 (override present, clamped),
+  `trader4510`/NIFTY26OCTFUT → 10, `trader4510`/AXISBANK → 20,
+  `trader@realbulls.io`/BTC → 20. Live trade (probe account, 20x): BUY 0.01
+  BTC @ 84,314.44 → margin $42.157 (= notional/20 exactly); close @ 84,309.14
+  → realized -$0.053; ledger HOLD/RELEASE/REALIZED_PNL all consistent.
+- Follow-up fixed: admin segment vocabulary (`INDEX_FUTURES`, …) never
+  matched NFO/MCX asset segments (`NFO-FUT`, `MCX-FUT`). Added
+  `canonicalSegment()` in `market.service.ts` (`MCX-*` → `COMMODITY`,
+  `*-FUT` → `INDEX/STOCK_FUTURES` by asset class, `*-OPT` → `…_OPTIONS`,
+  `NSE`/`BSE` → `EQUITY`; idempotent on canonical values) and used it in
+  `resolveRisk` override matching + `isSegmentTradable`. Verified on probe
+  account: `INDEX_FUTURES`→5 hits `NIFTY26OCTFUT` (5, capped from 10),
+  `COMMODITY`→7 hits `CRUDEOIL26NOVFUT` (7); `AXISBANK26OCTFUT` control stays
+  10. Overrides cleaned up after. Note: for restricted tenants this also
+  newly *allows* previously-blocked F&O/MCX rows under matching canonical
+  lists — intended, but worth knowing.
+
+---
+
+## 2026-10-21 — Fixed 83.5x notional/margin/P&L blow-up on INR instruments
+
+- Symptom: `CRUDEOIL26NOVFUT` ticket showed Notional `₹76,920.20` for
+  `0.1 lots x Rs 9,212` (correct: `Rs 921.20`); AXISBANK/HDFCBANK similarly
+  wrong. Root cause: ledger/margin math is USD-denominated but INR-quoted
+  prices entered it raw — `0.1 x 9212 = 921.2` was treated as USD, then the
+  display multiplied by `83.5` again.
+- New `quoteToUsd()` in `packages/engine` (`DEFAULT_USD_INR = 83.5`,
+  overridable via API `USD_INR` / web `NEXT_PUBLIC_USD_INR`, both added to the
+  `.env.example` files). Prices stay in market terms in storage/display
+  (`fmtPrice`); only USD-bound values convert. Applied in `order.service.ts`
+  (preview, fill margin, close realized, risk-cycle marks, pending fills),
+  `pnl.worker.ts` snapshots, and the `OrderTicket` preview.
+- Formula confirmed: futures/options `qty x lot size x price`
+  (`contractSize`), cash equities `qty x price` (`contractSize = 1` for
+  `AXISBANK`/`HDFCBANK`). **Lot-size correction:** Kite normalizes every MCX
+  `lot_size` to 1 while NFO/BFO lots arrive real (NIFTY 65, BANKNIFTY 30,
+  AXISBANK 625). Added an `MCX_LOTS` spec table in `instrument.service.ts`
+  (CRUDEOIL 100 / mini 10, GOLD 100 / mini 10, SILVER 30 / mini 5 / micro 1,
+  NATURALGAS 1250, COPPER 2500, NICKEL 1500, ALUMINIUM/ZINC/LEAD 5000,
+  MENTHAOIL 360, COTTON 25, CASTORSEED 100; unknown fall back to Kite's
+  value). Re-synced, backfilled the 4 live MCX assets
+  (crude 1 → 100, NG 1 → 1250). Ticket caption now reads true lots.
+- **MCX session hours:** `isMarketOpen` treated every commodity as open all
+  weekday; MCX actually trades 9:00–23:30 IST, so badges lingered open after
+  close. `MCX-*` segments now follow the real window in `market-hours.ts`.
+  (`1 lot = N units · Notional = qty x N x price`), resets the default qty to
+  `1` whole lot when switching to a derivative (API rejects fractional lots),
+  since the old `0.10` default was unsubmittable there.
+- Verified live (MCX open): BUY 1 lot filled `@ 9211.92` (market terms),
+  `marginUsed $11.03`, closed at `9211` → `realized -$0.011` (spread only).
+- 95% auto-close validated live: staged BUY 0.013 BTC @ 8,000,000 on a
+  throwaway signup (`riskprobe@realbulls.io`, ≈-103% unrealized) → risk cycle
+  closed it within seconds, `realized -$102,899.82`, `marginUsed 0`,
+  `Positions auto-closed` notification delivered. Probe account left at
+  -$2,899.82 for inspection (suspend it from `/admin` when done).
+  Engine suite 21/21 incl. new crude/equity conversion cases; api+web
+  typecheck clean. Note: closed trades from before keep their old values;
+  open positions self-correct on the next risk-cycle mark.
+
+---
+
+## 2026-10-21 — Fixed currency hydration mismatch on /terminal
+
+- Recoverable Error `Hydration failed … server rendered text didn't match the
+  client`: `useUiStore` initialized `currency`/`advanced` from `localStorage`
+  at module load (`lib/store.ts`), so the server prerendered INR defaults
+  while the client hydrated stored USD (`$0.00` vs `₹0.00`, toggle classes in
+  `TopBar`/`AccountBar`). Same latent bug in `advanced`.
+- Store now initializes with static server-matching defaults (`INR`/`false`)
+  and applies stored preferences after mount via `hydrateUi()`, called once in
+  `AppProviders` — the same pattern `I18nProvider` already uses for locale.
+  `pnpm --filter @realbulls/web typecheck` clean; hot-reloaded, no restart.
+
+---
+
+## 2026-10-21 — MCX instruments searchable + host quote bridge for live ticks
+
+- **Search gap:** instrument sync/search only covered `NFO`/`BFO`/`NSE`, so
+  commodity futures (MCX `CRUDEOIL`, `GOLD`, `SILVER`, `NATURALGAS`, …) were
+  unfindable. Added `MCX` to `DEFAULT_EXCHANGES` in
+  `apps/api/src/services/instrument.service.ts` (sync + search) and mapped
+  MCX rows to `COMMODITY` (was `STOCK`, which would have applied NSE 9:15–15:30
+  hours instead of the weekday rule in `lib/market-hours.ts`). Synced 16,247
+  MCX contracts (72,015 total); `q=crude oil&type=FUT` returns Nov/Dec/Jan…
+  `CRUDEOILxxFUT` plus minis, earliest expiry first.
+- **No live ticks:** the Docker `ws-gateway` (image predates the repo, logs
+  nothing on Kite failures, container DNS flaky per its Binance errors)
+  published zero `realbulls:price:*` keys for any Kite instrument despite a
+  fresh broker token and a correct registry — verified host-side
+  `GET api.kite.trade/quote?i=MCX:CRUDEOIL26NOVFUT` → `200`, `last_price 9202`.
+  No Docker operations allowed, so added `apps/api/src/services/quote-bridge.worker.ts`,
+  started/stopped in `apps/api/src/index.ts` alongside the other workers: every
+  10s it backfills only symbols whose snapshot is missing/stale (>30s) with the
+  gateway-identical dual-write (`PUBLISH ticks:<SYM>` + `SET realbulls:price:<SYM>`,
+  0.3 bps spread, IST exchange timestamps). It stands down per symbol once the
+  gateway recovers, so no duplicate traffic.
+- Verified: 26 → 42 price keys, `CRUDEOIL26NOVFUT` `mid 9208 live`,
+  `marketOpen true`; illiquid `CRUDEOIL26NOV3850CE` (last traded 6 days ago)
+  correctly stays quote-less under the 5-min freshness rule.
+- **Empty charts:** the live candle worker only builds bars forward, so new
+  contracts graphed nothing. Added `apps/api/src/services/history.service.ts`:
+  minute history from Kite (`/instruments/historical`, 7-day lookback) with
+  local M5/M15/H1 aggregation into the worker's UTC buckets;
+  auto-backfills fire-and-forget in `ensureAssetForInstrument` plus manual
+  `POST /assets/:id/candles/backfill`. `CRUDEOIL26NOVFUT` backfilled 4,714 M1
+  + 82 H1 bars; live worker continues forward from there.
+  `pnpm --filter @realbulls/api typecheck` clean; host `tsx watch` picked it up
+  with no restart.
+
+---
+
 ## 2026-10-20 — Removed synthetic market data
 
 - Deleted the synthetic Go feed and its market-hours fallback. The gateway now

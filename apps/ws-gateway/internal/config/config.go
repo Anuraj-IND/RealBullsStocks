@@ -87,10 +87,10 @@ func Load() Config {
 		BinanceSymbols:    splitCSV(getenv("BINANCE_SYMBOLS", "")),
 		RegistryKey:       getenv("REGISTRY_KEY", "realbulls:registry"),
 		TwelveDataKey:     getenv("TWELVEDATA_API_KEY", ""),
-		TwelveDataPollMS:  getint("TWELVEDATA_POLL_MS", 60000),
+		TwelveDataPollMS:  getint("TWELVEDATA_POLL_MS", 15000),
 		TwelveDataSymbols: parseSymbolMaps(getenv("TWELVEDATA_SYMBOLS", defaultTwelveDataSymbols)),
 		ZerodhaKey:        getenv("ZERODHA_API_KEY", ""),
 		ZerodhaSymbols:    parseSymbolMaps(getenv("ZERODHA_SYMBOLS", defaultZerodhaSymbols)),
-		ZerodhaPollMS:     getint("ZERODHA_POLL_MS", 30000),
+		ZerodhaPollMS:     getint("ZERODHA_POLL_MS", 2000),
 	}
 }

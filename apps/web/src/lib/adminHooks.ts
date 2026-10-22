@@ -95,7 +95,10 @@ export function useUpdateUser() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: ({ id, body }: { id: string; body: Record<string, unknown> }) => apiPatch(`/admin/users/${id}`, body),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["admin", "users"] }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["admin", "users"] });
+      qc.invalidateQueries({ queryKey: ["assets"] });
+    },
     onError: fail("Update failed"),
   });
 }
@@ -104,7 +107,10 @@ export function useSetUserLeverage() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: ({ id, body }: { id: string; body: Record<string, unknown> }) => apiPut(`/admin/users/${id}/leverage`, body),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["admin", "users"] }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["admin", "users"] });
+      qc.invalidateQueries({ queryKey: ["assets"] });
+    },
     onError: fail("Leverage update failed"),
   });
 }
@@ -117,6 +123,7 @@ export function useSetUserLeverageSegments() {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["admin", "users"] });
       qc.invalidateQueries({ queryKey: ["admin", "admins"] });
+      qc.invalidateQueries({ queryKey: ["assets"] });
     },
     onError: fail("Segments update failed"),
   });
@@ -140,7 +147,10 @@ export function useCreateLeverageRule() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (body: Record<string, unknown>) => apiPut("/admin/leverage", body),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["admin", "leverage"] }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["admin", "leverage"] });
+      qc.invalidateQueries({ queryKey: ["assets"] });
+    },
     onError: fail("Leverage rule failed"),
   });
 }
@@ -416,6 +426,7 @@ export function useSetTenantSegments() {
     mutationFn: (segments: string[]) => apiPatch("/admin/tenant/segments", { segments }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["admin", "tenant-settings"] });
+      qc.invalidateQueries({ queryKey: ["assets"] });
       toast.success("Platform segments updated");
     },
     onError: fail("Segments update failed"),

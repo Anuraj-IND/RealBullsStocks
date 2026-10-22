@@ -2,7 +2,7 @@
 
 import { TopBar, useEnsureSession } from "@/components/terminal/TopBar";
 import { Card, Stat } from "@/components/ui/Card";
-import { cls, fmtPrice } from "@/lib/format";
+import { cls, fmtMarket } from "@/lib/format";
 import { useMoney } from "@/lib/money";
 import { useAnalytics } from "@/lib/hooks";
 
@@ -106,8 +106,8 @@ export default function AnalyticsPage() {
                     <td className="num px-3 py-2 text-xs text-muted">{t.closedAt ? new Date(t.closedAt).toLocaleString() : "—"}</td>
                     <td className={cls("px-3 py-2", t.side === "BUY" ? "text-up" : "text-down")}>{t.side}</td>
                     <td className="num px-3 py-2">{t.qty}</td>
-                    <td className="num px-3 py-2">{fmtPrice(t.entry)}</td>
-                    <td className="num px-3 py-2">{fmtPrice(t.exit)}</td>
+                    <td className="num px-3 py-2">{fmtMarket(t.entry, t.quoteCurrency)}</td>
+                    <td className="num px-3 py-2">{fmtMarket(t.exit, t.quoteCurrency)}</td>
                     <td className={cls("num px-3 py-2 font-semibold", t.realizedPnl >= 0 ? "text-up" : "text-down")}>{money.signed(t.realizedPnl)}</td>
                     <td className="px-3 py-2">
                       <span className={cls("badge", t.realizedPnl >= 0 ? "bg-lime/15 text-lime" : "bg-brand/15 text-brandbright")}>

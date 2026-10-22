@@ -1,8 +1,9 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { cls, fmtPrice } from "@/lib/format";
+import { cls, fmtMarket } from "@/lib/format";
 import { useSymbolStats, useUiStore } from "@/lib/store";
+import { useQuoteCurrency } from "@/lib/hooks";
 
 interface Print {
   id: number;
@@ -17,6 +18,7 @@ const CAP = 18;
 export function TradesTape() {
   const symbol = useUiStore((s) => s.activeSymbol);
   const { tick, tickChange } = useSymbolStats(symbol);
+  const quoteCurrency = useQuoteCurrency(symbol);
   const [prints, setPrints] = useState<Print[]>([]);
   const idRef = useRef(0);
   const lastRef = useRef<number | undefined>(undefined);
@@ -49,7 +51,7 @@ export function TradesTape() {
       <div className="min-h-0 flex-1 overflow-hidden">
         {prints.map((p) => (
           <div key={p.id} className="grid grid-cols-3 px-3 py-[3px] text-xs">
-            <span className={cls("num", p.side === "BUY" ? "text-up" : "text-down")}>{fmtPrice(p.price)}</span>
+            <span className={cls("num", p.side === "BUY" ? "text-up" : "text-down")}>{fmtMarket(p.price, quoteCurrency)}</span>
             <span className="num text-right text-muted">{p.size}</span>
             <span className="num text-right text-muted/70">{new Date(p.ts).toLocaleTimeString([], { hour12: false })}</span>
           </div>

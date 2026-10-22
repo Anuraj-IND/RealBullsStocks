@@ -22,6 +22,7 @@ import { startCandleWorker, stopCandleWorker } from "./services/candle.worker.js
 import { startAlertWorker, stopAlertWorker } from "./services/alert.worker.js";
 import { startInstrumentSync } from "./services/instrument.service.js";
 import { startMarketCloseSync, stopMarketCloseSync } from "./services/market-close.service.js";
+import { startQuoteBridge, stopQuoteBridge } from "./services/quote-bridge.worker.js";
 
 async function main() {
   const app = Fastify({
@@ -108,6 +109,7 @@ async function main() {
   startAlertWorker();
   startInstrumentSync();
   startMarketCloseSync();
+  startQuoteBridge();
   const registryTimer = setInterval(() => {
     void publishRegistry().catch(() => undefined);
   }, 30000);
@@ -120,6 +122,7 @@ async function main() {
     stopCandleWorker();
     stopAlertWorker();
     stopMarketCloseSync();
+    stopQuoteBridge();
     await app.close();
     await prisma.$disconnect();
     process.exit(0);

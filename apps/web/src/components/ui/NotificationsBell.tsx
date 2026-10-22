@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { cls } from "@/lib/format";
 import { useNotifications, useMarkNotificationsRead, useDeleteNotification, useClearNotifications } from "@/lib/hooks";
 import { useI18n } from "@/lib/i18n";
+import { NotifBody } from "@/components/ui/NotifBody";
 
 export function NotificationsBell() {
   const [open, setOpen] = useState(false);
@@ -65,7 +66,7 @@ export function NotificationsBell() {
                 <div key={n.id} className={cls("group flex items-start justify-between gap-2 border-b border-line/60 px-3 py-2", !n.read && "bg-slate/40")}>
                   <div className="min-w-0">
                     <div className="truncate text-sm font-medium">{n.title}</div>
-                    {n.body && <div className="text-xs text-muted">{n.body}</div>}
+                    <NotifBody n={n} />
                     <div className="num mt-0.5 text-[10px] text-muted">{new Date(n.createdAt).toLocaleString()}</div>
                   </div>
                   <button

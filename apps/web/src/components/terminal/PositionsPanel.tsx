@@ -1,12 +1,23 @@
 "use client";
 
 import { useState } from "react";
-import { cls, fmtPrice } from "@/lib/format";
+import { cls, fmtMarket } from "@/lib/format";
 import { useMoney } from "@/lib/money";
-import { usePositions, useOrders, usePositionHistory, useLedger, useClosePosition, useCloseAll, useCancelOrder } from "@/lib/hooks";
-import { useUiStore } from "@/lib/store";
+import { usePositions, useOrders, usePositionHistory, useLedger, useClosePosition, useCloseAll, useCancelOrder, useAssets } from "@/lib/hooks";
+import { useUiStore, toast } from "@/lib/store";
 
 type Tab = "positions" | "orders" | "history" | "ledger";
+
+// Mirrors the server's MIN_HOLD_MS: positions younger than this can't be
+// closed yet. The client pre-check gives an instant wait toast; the server
+// re-enforces the same gate and stays the source of truth.
+const MIN_HOLD_SECS = 15;
+
+function holdWaitSec(openedAt?: string | null): number {
+  if (!openedAt) return 0;
+  const elapsed = Date.now() - new Date(openedAt).getTime();
+  return Math.max(0, Math.ceil((MIN_HOLD_SECS * 1000 - elapsed) / 1000));
+}
 
 export function PositionsPanel() {
   const tab = useUiStore((s) => s.tab);
@@ -23,6 +34,9 @@ export function PositionsPanel() {
 
   const summary = positions.data?.summary;
   const open = positions.data?.positions ?? [];
+  const assetsQuery = useAssets();
+  const assetsBySymbol = new Map((assetsQuery.data?.assets ?? []).map((a) => [a.symbol, a.quoteCurrency]));
+  const qcOf = (symbol: string): string | undefined => assetsBySymbol.get(symbol);
 
   return (
     <div className="flex h-full flex-col">
@@ -75,20 +89,26 @@ export function PositionsPanel() {
                   <span className={cls("badge", p.side === "BUY" ? "bg-lime/15 text-lime" : "bg-brand/15 text-brandbright")}>{p.side}</span>
                 </Td>
                 <Td className="num">{p.qty}</Td>
-                <Td className="num">{fmtPrice(p.avgEntryPrice)}</Td>
-                <Td className="num">{fmtPrice(p.markPrice)}</Td>
+                <Td className="num">{fmtMarket(p.avgEntryPrice, qcOf(p.symbol))}</Td>
+                <Td className="num">{fmtMarket(p.markPrice, qcOf(p.symbol))}</Td>
                 <Td className="num">{money.fmt(p.marginUsed)}</Td>
                 <Td className={cls("num font-semibold", p.unrealizedPnl >= 0 ? "text-up" : "text-down")}>{money.signed(p.unrealizedPnl)}</Td>
                 <Td className="text-right">
                   <button
-                    onClick={() =>
+                    onClick={() => {
+                      const wait = holdWaitSec(p.openedAt);
+                      if (wait > 0) {
+                        toast.info("Hold on", `You can close in ${wait}s`);
+                        return;
+                      }
                       setConfirm({
                         title: `Close ${p.symbol}`,
                         message: `Close ${p.side} ${p.qty} ${p.symbol} at market?`,
-                        run: () => closePosition.mutate({ id: p.id }),
-                      })
-                    }
+                        run: () => closePosition.mutate({ id: p.id, symbol: p.symbol }),
+                      });
+                    }}
                     className="btn-ghost py-1 text-xs"
+                    disabled={closePosition.isPending}
                   >
                     Close
                   </button>
@@ -107,7 +127,7 @@ export function PositionsPanel() {
                 <Td className={o.side === "BUY" ? "text-up" : "text-down"}>{o.side}</Td>
                 <Td>{o.kind === "SL" ? "STOP-LOSS" : o.kind === "TP" ? "TAKE-PROFIT" : o.type}</Td>
                 <Td className="num">{o.qty}</Td>
-                <Td className="num">{fmtPrice(o.price ?? o.triggerPrice)}</Td>
+                <Td className="num">{fmtMarket(o.price ?? o.triggerPrice, qcOf(o.symbol))}</Td>
                 <Td><span className="badge bg-amber/15 text-amber">{o.status}</span></Td>
                 <Td className="text-right">
                   <button
@@ -138,8 +158,8 @@ export function PositionsPanel() {
                   <Td className="num font-semibold">{p.symbol}</Td>
                   <Td className={p.side === "BUY" ? "text-up" : "text-down"}>{p.side}</Td>
                   <Td className="num">{p.qty}</Td>
-                  <Td className="num">{fmtPrice(p.avgEntryPrice)}</Td>
-                  <Td className="num">{fmtPrice(p.closedPrice)}</Td>
+                  <Td className="num">{fmtMarket(p.avgEntryPrice, qcOf(p.symbol))}</Td>
+                  <Td className="num">{fmtMarket(p.closedPrice, qcOf(p.symbol))}</Td>
                   <Td className="num text-muted">{money.fmt(p.commission ?? 0)}</Td>
                   <Td className={cls("num", p.realizedPnl >= 0 ? "text-up" : "text-down")}>{money.signed(p.realizedPnl)}</Td>
                   <Td className={cls("num font-semibold", net >= 0 ? "text-up" : "text-down")}>{money.signed(net)}</Td>

@@ -2,14 +2,14 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { motion } from "framer-motion";
-import { previewOrder } from "@realbulls/engine";
+import { previewOrder, quoteToInr } from "@realbulls/engine";
 import type { OrderSide, OrderType } from "@realbulls/shared";
 import { apiPost, ApiError } from "@/lib/api";
-import { useAssets, useActiveAccount } from "@/lib/hooks";
-import { useAccountStore, useSymbolStats, useUiStore, toast } from "@/lib/store";
-import { useMoney } from "@/lib/money";
+import { useAssets, useActiveAccount, usePositions } from "@/lib/hooks";
+import { useAccountStore, useAuthStore, useSymbolStats, useUiStore, toast } from "@/lib/store";
+import { useMoney, USD_INR } from "@/lib/money";
 import { useQueryClient } from "@tanstack/react-query";
-import { assetMarketLabel, fmtPrice, cls, isDerivativeSegment } from "@/lib/format";
+import { assetMarketLabel, fmtMarket, toMarket, cls, isDerivativeSegment } from "@/lib/format";
 
 const RISK = { marginCallPct: 100, stopOutPct: 5 };
 
@@ -45,15 +45,34 @@ export function OrderTicket() {
     setQuickSide(null);
   }, [quickSide, asset, setQuickSide]);
 
-  const balance = snapshot?.balance ?? account?.balance ?? 0;
-  const marginUsed = snapshot?.marginUsed ?? account?.marginUsed ?? 0;
-  const unrealized = snapshot?.unrealizedPnl ?? 0;
+  // Keep the default size valid per market: whole lots for derivatives
+  // (the API rejects fractional lots with INVALID_LOT).
+  const assetSegment = asset?.segment;
+  useEffect(() => {
+    setLots(isDerivativeSegment(assetSegment) ? "1" : "0.10");
+  }, [symbol, assetSegment]);
+
+  const positionsSummary = usePositions().data?.summary;
+  // Freshness order: WS account snapshot (push) → positions summary (3s
+  // poll) → login session. In particular unrealized must never silently
+  // fall back to 0 while other positions are open and moving — that's what
+  // let stacked orders price off a stale picture.
+  const balance = snapshot?.balance ?? positionsSummary?.balance ?? account?.balance ?? 0;
+  const marginUsed = snapshot?.marginUsed ?? positionsSummary?.marginUsed ?? account?.marginUsed ?? 0;
+  const unrealized = snapshot?.unrealizedPnl ?? positionsSummary?.unrealizedPnl ?? 0;
 
   const qty = parseFloat(lots) || 0;
   const lev = asset?.leverage && asset.leverage > 0 ? asset.leverage : 1;
   const liveMid = tick?.mid ?? asset?.mid;
+  // Price inputs are typed in ₹ and converted back to market terms for the
+  // API (which speaks market terms); liveMid stays market terms throughout.
+  const toMarketTerms = (v: string): number | undefined => {
+    const n = parseFloat(v);
+    if (!n) return undefined;
+    return toMarket(n, asset?.quoteCurrency, asset?.tickSize ?? 0);
+  };
   const hasLiveQuote = (tick?.mid ?? 0) > 0 || Boolean(asset && asset.quoteKind === "live" && (asset.mid ?? 0) > 0);
-  const refPrice = type === "LIMIT" && price ? parseFloat(price) : liveMid ?? 0;
+  const refPrice = type === "LIMIT" && price ? (toMarketTerms(price) ?? 0) : liveMid ?? 0;
 
   const derivativeSegment = isDerivativeSegment(asset?.segment);
   const marketClosed = asset?.marketOpen === false;
@@ -61,10 +80,12 @@ export function OrderTicket() {
   const preview = useMemo(() => {
     if (!asset) return null;
     const isDeriv = isDerivativeSegment(asset.segment);
+    // Ledger is ₹: brokerage config is rupees passthrough, market price
+    // converts to ₹ for math (family: quoteToInr server-side).
     return previewOrder({
       side,
       qty,
-      price: refPrice,
+      price: quoteToInr(refPrice, asset.quoteCurrency, USD_INR),
       contractSize: asset.contractSize,
       leverage: lev,
       commissionPerLot: isDeriv ? asset.commissionPerLot : 0,
@@ -86,10 +107,10 @@ export function OrderTicket() {
         side,
         type,
         qty,
-        price: type === "LIMIT" ? parseFloat(price) : undefined,
-        triggerPrice: type === "STOP" ? parseFloat(trigger) : undefined,
-        stopLoss: stopLoss ? parseFloat(stopLoss) : undefined,
-        takeProfit: takeProfit ? parseFloat(takeProfit) : undefined,
+        price: type === "LIMIT" ? toMarketTerms(price) : undefined,
+        triggerPrice: type === "STOP" ? toMarketTerms(trigger) : undefined,
+        stopLoss: toMarketTerms(stopLoss),
+        takeProfit: toMarketTerms(takeProfit),
         idempotencyKey: crypto.randomUUID(),
       });
       if (type === "STOP") {
@@ -101,6 +122,7 @@ export function OrderTicket() {
       qc.invalidateQueries({ queryKey: ["positions"] });
       qc.invalidateQueries({ queryKey: ["orders"] });
       qc.invalidateQueries({ queryKey: ["ledger"] });
+      useAuthStore.getState().refreshSession().catch(() => undefined);
     } catch (err) {
       toast.error("Order rejected", err instanceof ApiError ? err.message : "Unknown error");
     } finally {
@@ -156,7 +178,7 @@ export function OrderTicket() {
           </div>
         </div>
         <div className="shrink-0 text-right">
-          <div className="num text-sm">{hasLiveQuote ? fmtPrice(liveMid) : "—"}</div>
+          <div className="num text-sm">{hasLiveQuote ? fmtMarket(liveMid, asset?.quoteCurrency) : "—"}</div>
           <div className="text-[10px] uppercase tracking-wider text-muted">
             {assetMarketLabel(asset?.assetClass ?? "", asset?.segment)}
           </div>
@@ -188,14 +210,14 @@ export function OrderTicket() {
         </div>
 
         {type === "LIMIT" && (
-          <Field label={`Limit price (${isBuy ? "below" : "above"} market)`}>
-            <input className="input num" value={price} onChange={(e) => setPrice(e.target.value)} placeholder={fmtPrice(liveMid)} />
+          <Field label={`Limit price ₹ (${isBuy ? "below" : "above"} market)`}>
+            <input className="input num" value={price} onChange={(e) => setPrice(e.target.value)} placeholder={fmtMarket(liveMid, asset?.quoteCurrency)} />
           </Field>
         )}
         {type === "STOP" && (
           <>
-            <Field label={`Stop-loss price (${isBuy ? "below" : "above"} market)`}>
-              <input className="input num" value={trigger} onChange={(e) => setTrigger(e.target.value)} placeholder={fmtPrice(liveMid)} />
+            <Field label={`Stop-loss price ₹ (${isBuy ? "below" : "above"} market)`}>
+              <input className="input num" value={trigger} onChange={(e) => setTrigger(e.target.value)} placeholder={fmtMarket(liveMid, asset?.quoteCurrency)} />
             </Field>
             <p className="text-[11px] text-muted">
               Closes your <span className="text-ink">{side}</span> position when the price is hit.
@@ -204,9 +226,19 @@ export function OrderTicket() {
         )}
 
         <div className="grid grid-cols-2 gap-3">
-          <Field label={`Quantity${derivativeSegment ? " (lots)" : ""}`}>
-            <input className="input num" value={lots} onChange={(e) => setLots(e.target.value)} inputMode="decimal" />
-          </Field>
+          <div>
+            <Field label={`Quantity${derivativeSegment ? " (lots)" : ""}`}>
+              <input className="input num" value={lots} onChange={(e) => setLots(e.target.value)} inputMode="decimal" />
+            </Field>
+            {derivativeSegment && asset && (
+              <p className="num mt-1 text-[10px] text-muted">
+                1 lot = {asset.contractSize} units · Notional = qty × {asset.contractSize} × price
+              </p>
+            )}
+            {!derivativeSegment && (
+              <p className="num mt-1 text-[10px] text-muted">Notional = qty × price</p>
+            )}
+          </div>
           <Field label="Leverage (set by admin)">
             <div className="input num flex items-center justify-between text-muted">
               <span>1:{lev}</span>
@@ -217,10 +249,10 @@ export function OrderTicket() {
 
         {advanced && (
           <div className="grid grid-cols-2 gap-3">
-            <Field label="Stop loss">
+            <Field label="Stop loss ₹">
               <input className="input num" value={stopLoss} onChange={(e) => setStopLoss(e.target.value)} placeholder="—" />
             </Field>
-            <Field label="Take profit">
+            <Field label="Take profit ₹">
               <input className="input num" value={takeProfit} onChange={(e) => setTakeProfit(e.target.value)} placeholder="—" />
             </Field>
           </div>

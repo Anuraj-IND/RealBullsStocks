@@ -10,6 +10,7 @@ import { D } from "../lib/money.js";
 import { getEffectiveConfig, getQuoteForAsset, resolveRisk, resolveAssetSegment } from "../services/market.service.js";
 import { ensureAssetForInstrument } from "../services/instrument.service.js";
 import { getNseMarketStatus, marketStatusForAsset } from "../services/market-status.service.js";
+import { backfillHistory } from "../services/history.service.js";
 
 export default async function marketRoutes(app: FastifyInstance) {
   app.addHook("preHandler", authenticate);
@@ -90,6 +91,15 @@ export default async function marketRoutes(app: FastifyInstance) {
       feedSource: asset.feedSource,
       ...quote,
     };
+  });
+
+  app.post("/assets/:id/candles/backfill", async (request) => {
+    const { id } = request.params as { id: string };
+    try {
+      return { ok: true, ...(await backfillHistory(id)) };
+    } catch (err) {
+      throw badRequest(err instanceof Error ? err.message : "Backfill failed");
+    }
   });
 
   app.get("/assets/:id/candles", async (request) => {

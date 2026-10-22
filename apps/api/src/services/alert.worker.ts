@@ -20,6 +20,7 @@ async function tick(): Promise<void> {
       "ALERT",
       `${alert.asset.symbol} ${alert.direction === "ABOVE" ? "≥" : "≤"} ${price}`,
       `Price is now ${q.mid}`,
+      { price: q.mid, quoteCurrency: alert.asset.quoteCurrency },
     );
   }
 }

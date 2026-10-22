@@ -4,7 +4,8 @@ import { useEffect, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { TopBar, useEnsureSession } from "@/components/terminal/TopBar";
 import { Card } from "@/components/ui/Card";
-import { cls, fmtPrice, fmtSigned } from "@/lib/format";
+import { NotifBody } from "@/components/ui/NotifBody";
+import { cls, fmtMarket, toMarket } from "@/lib/format";
 import { useAuthStore, toast } from "@/lib/store";
 import { useI18n, LOCALES, type Locale } from "@/lib/i18n";
 import { useAlerts, useCreateAlert, useDeleteAlert, useUpdateProfile, useChangePassword, useNotifications, useAssets, useBrokerStatus, useConnectBroker } from "@/lib/hooks";
@@ -91,7 +92,7 @@ function BrokerCard() {
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
-    const market = params.get("market");
+    const market = params.get("market") ?? params.get("broker");
     if (!market) return;
     if (market === "connected") {
       toast.success("Market data connected", "Live prices are now available");
@@ -99,6 +100,7 @@ function BrokerCard() {
       toast.error("Market data connection failed", "Please try again");
     }
     params.delete("market");
+    params.delete("broker");
     const query = params.toString();
     window.history.replaceState(null, "", `${window.location.pathname}${query ? `?${query}` : ""}`);
     void qc.invalidateQueries({ queryKey: ["broker", "status"] });
@@ -199,6 +201,8 @@ function AlertsCard() {
   const [price, setPrice] = useState("");
 
   const options = assets.data?.assets ?? [];
+  const qcById = new Map(options.map((a) => [a.id, a.quoteCurrency]));
+  const tickById = new Map(options.map((a) => [a.id, a.tickSize]));
 
   return (
     <Card title={t("settings.alerts")}>
@@ -214,12 +218,13 @@ function AlertsCard() {
           <option value="ABOVE">{t("alert.above")}</option>
           <option value="BELOW">{t("alert.below")}</option>
         </select>
-        <input className="input num" placeholder="Price" value={price} onChange={(e) => setPrice(e.target.value)} inputMode="decimal" />
+        <input className="input num" placeholder="Price ₹" value={price} onChange={(e) => setPrice(e.target.value)} inputMode="decimal" />
         <button
           className="btn-primary"
           disabled={create.isPending || !(assetId || options[0]?.id) || !parseFloat(price)}
           onClick={() => {
-            create.mutate({ assetId: assetId || options[0]!.id, direction, price: parseFloat(price) });
+            const id = assetId || options[0]!.id;
+            create.mutate({ assetId: id, direction, price: toMarket(parseFloat(price), qcById.get(id), tickById.get(id) ?? 0) });
             setPrice("");
           }}
         >
@@ -233,9 +238,9 @@ function AlertsCard() {
             <div className="flex items-center gap-3">
               <span className="num font-semibold">{a.symbol}</span>
               <span className={a.direction === "ABOVE" ? "text-up" : "text-down"}>
-                {a.direction === "ABOVE" ? "≥" : "≤"} {fmtPrice(a.price)}
+                {a.direction === "ABOVE" ? "≥" : "≤"} {fmtMarket(a.price, qcById.get(a.assetId))}
               </span>
-              <span className="num text-xs text-muted">now {fmtPrice(a.mark)}</span>
+              <span className="num text-xs text-muted">now {fmtMarket(a.mark, qcById.get(a.assetId))}</span>
               <span className={cls("badge", a.status === "ACTIVE" ? "bg-amber/15 text-amber" : "bg-slate2 text-muted")}>{a.status}</span>
             </div>
             <button className="btn-ghost py-1 text-xs" onClick={() => remove.mutate(a.id)}>
@@ -258,7 +263,7 @@ function NotificationsList() {
       {items.map((n) => (
         <div key={n.id} className={cls("py-2", !n.read && "border-l-2 border-accent pl-2")}>
           <div className="text-sm font-medium">{n.title}</div>
-          {n.body && <div className="text-xs text-muted">{n.body}</div>}
+          <NotifBody n={n} />
           <div className="num text-[10px] text-muted">{new Date(n.createdAt).toLocaleString()}</div>
         </div>
       ))}

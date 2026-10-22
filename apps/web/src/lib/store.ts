@@ -46,9 +46,12 @@ interface AuthState {
   setActiveAccount: (id: string) => void;
   markSessionChecked: () => void;
   clear: () => void;
+  // Re-fetch /me after fills/closes so balance + marginUsed never sit stale
+  // (the session otherwise loads once at login). Keeps the active account.
+  refreshSession: () => Promise<void>;
 }
 
-export const useAuthStore = create<AuthState>((set) => ({
+export const useAuthStore = create<AuthState>((set, get) => ({
   user: null,
   tenant: null,
   accounts: [],
@@ -59,6 +62,18 @@ export const useAuthStore = create<AuthState>((set) => ({
   setActiveAccount: (id) => set({ activeAccountId: id }),
   markSessionChecked: () => set({ sessionChecked: true }),
   clear: () => set({ user: null, tenant: null, accounts: [], activeAccountId: null, sessionChecked: true }),
+  refreshSession: async () => {
+    const { apiGet } = await import("./api");
+    const me = await apiGet<{ user: AuthUser; tenant: TenantInfo | null; accounts: AccountInfo[] }>("/me");
+    const prevActive = get().activeAccountId;
+    set({
+      user: me.user,
+      tenant: me.tenant,
+      accounts: me.accounts,
+      activeAccountId: me.accounts.some((a) => a.id === prevActive) ? prevActive : (me.accounts[0]?.id ?? null),
+      sessionChecked: true,
+    });
+  },
 }));
 
 
@@ -130,9 +145,7 @@ interface UiState {
   
   advanced: boolean;
   toggleAdvanced: () => void;
-  
-  currency: "USD" | "INR";
-  setCurrency: (c: "USD" | "INR") => void;
+  hydrateUi: () => void;
   
   mobileTab: "watchlist" | "chart" | "trade" | "positions";
   setMobileTab: (t: UiState["mobileTab"]) => void;
@@ -150,9 +163,11 @@ function persistAdvanced(v: boolean): void {
   if (typeof window !== "undefined") window.localStorage.setItem("rb_advanced", v ? "1" : "0");
 }
 
-function readCurrency(): "USD" | "INR" {
-  if (typeof window === "undefined") return "INR";
-  return window.localStorage.getItem("rb_currency") === "USD" ? "USD" : "INR";
+function hydrateUiState(): Partial<UiState> {
+  if (typeof window === "undefined") return {};
+  // A pre-purge "USD" choice must never resurface: force INR and scrub it.
+  if (typeof window !== "undefined") window.localStorage.removeItem("rb_currency");
+  return { advanced: readAdvanced() };
 }
 
 export const useUiStore = create<UiState>((set) => ({
@@ -160,18 +175,14 @@ export const useUiStore = create<UiState>((set) => ({
   setActiveSymbol: (s) => set({ activeSymbol: s }),
   tab: "positions",
   setTab: (t) => set({ tab: t }),
-  advanced: readAdvanced(),
+  advanced: false,
   toggleAdvanced: () =>
     set((state) => {
       const next = !state.advanced;
       persistAdvanced(next);
       return { advanced: next };
     }),
-  currency: readCurrency(),
-  setCurrency: (c) => {
-    if (typeof window !== "undefined") window.localStorage.setItem("rb_currency", c);
-    set({ currency: c });
-  },
+  hydrateUi: () => set(hydrateUiState()),
   mobileTab: "watchlist",
   setMobileTab: (t) => set({ mobileTab: t }),
   quickSide: null,

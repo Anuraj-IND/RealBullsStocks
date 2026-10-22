@@ -12,6 +12,18 @@ export function dir(side: OrderSide): 1 | -1 {
 }
 
 
+// Ledger and account balances are denominated in RUPEES. Market-terms prices
+// enter ₹ math through this single choke point: INR quotes pass through,
+// foreign quotes (USD/USDT) convert at the foreign→₹ rate. Prices themselves
+// stay in market terms in storage and display; only math-bound values convert.
+export const DEFAULT_USD_INR = 83.5;
+
+export function quoteToInr(price: number, quoteCurrency?: string | null, usdInr: number = DEFAULT_USD_INR): number {
+  if ((quoteCurrency ?? "USD").toUpperCase() === "INR") return price;
+  return price * usdInr;
+}
+
+
 export function notionalValue(qty: number, price: number, contractSize = 1): number {
   return qty * price * contractSize;
 }

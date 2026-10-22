@@ -50,6 +50,49 @@ const INDEX_UNDERLYINGS = new Set([
 
 const SYNC_TYPES = new Set(["FUT", "CE", "PE", "EQ"]);
 
+// Kite normalizes every MCX lot_size to 1, but real MCX contracts have fixed
+// lot quantities (in price units). NFO/BFO lots arrive correct from Kite and
+// are used verbatim; only MCX is overridden here.
+const MCX_LOTS: Record<string, number> = {
+  CRUDEOIL: 100,
+  CRUDEOILM: 10,
+  NATURALGAS: 1250,
+  NATGASMINI: 310,
+  GOLD: 100,
+  GOLDM: 10,
+  SILVER: 30,
+  SILVERM: 5,
+  SILVERMIC: 1,
+  COPPER: 2500,
+  NICKEL: 1500,
+  ALUMINIUM: 5000,
+  ALUMINI: 1000,
+  ZINC: 5000,
+  ZINCMINI: 1000,
+  LEAD: 5000,
+  LEADMINI: 1000,
+  MENTHAOIL: 360,
+  COTTON: 25,
+  CASTORSEED: 100,
+};
+
+function resolveLotSize(exchange: string, name: string, instrumentType: string, kiteLot: number): number {
+  if (exchange.toUpperCase() === "MCX" && instrumentType !== "EQ") {
+    const known = MCX_LOTS[name.trim().toUpperCase()];
+    if (known) return known;
+  }
+  return Number.isFinite(kiteLot) && kiteLot > 0 ? Math.round(kiteLot) : 1;
+}
+
+// NFO/BFO = equity derivatives, NSE = cash equities, MCX = commodity
+// derivatives (CRUDEOIL, GOLD, SILVER, NATURALGAS, ...).
+const DEFAULT_EXCHANGES = ["NFO", "BFO", "NSE", "MCX"];
+
+function assetClassForInstrument(name: string, exchange: string): "COMMODITY" | "INDEX" | "STOCK" {
+  if (exchange.toUpperCase() === "MCX") return "COMMODITY";
+  return isIndexUnderlying(name) ? "INDEX" : "STOCK";
+}
+
 function isIndexUnderlying(name: string): boolean {
   return INDEX_UNDERLYINGS.has(name.trim().toUpperCase());
 }
@@ -125,6 +168,7 @@ async function syncExchange(exchange: string): Promise<number> {
     const tickRaw = iTick >= 0 ? Number(row[iTick]) : 0.05;
     const lotRaw = iLot >= 0 ? Number(row[iLot]) : 1;
     const lastRaw = iLast >= 0 ? Number(row[iLast]) : 0;
+    const exchangeName = (iExchange >= 0 ? row[iExchange]?.trim() : "") || exchange;
 
     records.push({
       instrumentToken: token,
@@ -134,10 +178,10 @@ async function syncExchange(exchange: string): Promise<number> {
       expiry,
       strike: Number.isFinite(strikeRaw) ? strikeRaw : 0,
       tickSize: Number.isFinite(tickRaw) && tickRaw > 0 ? tickRaw : 0.05,
-      lotSize: Number.isFinite(lotRaw) && lotRaw > 0 ? Math.round(lotRaw) : 1,
+      lotSize: resolveLotSize(exchangeName, name, instrumentType, lotRaw),
       instrumentType,
       segment: normalizeSegment(name, instrumentType, iSegment >= 0 ? row[iSegment] : undefined),
-      exchange: (iExchange >= 0 ? row[iExchange]?.trim() : "") || exchange,
+      exchange: exchangeName,
       lastPrice: Number.isFinite(lastRaw) ? lastRaw : 0,
     });
   }
@@ -149,7 +193,7 @@ async function syncExchange(exchange: string): Promise<number> {
   return records.length;
 }
 
-export async function syncInstruments(exchanges: string[] = ["NFO", "BFO", "NSE"]): Promise<Record<string, number>> {
+export async function syncInstruments(exchanges: string[] = DEFAULT_EXCHANGES): Promise<Record<string, number>> {
   const result: Record<string, number> = {};
   for (const exchange of exchanges) {
     result[exchange] = await syncExchange(exchange);
@@ -199,7 +243,7 @@ export function instrumentDto(i: Instrument) {
     segment: i.segment,
     exchange: i.exchange,
     lastPrice: Number(i.lastPrice),
-    assetClass: isIndexUnderlying(i.name) ? "INDEX" : "STOCK",
+    assetClass: assetClassForInstrument(i.name, i.exchange),
   };
 }
 
@@ -213,7 +257,7 @@ const SEARCH_ORDER: Prisma.InstrumentOrderByWithRelationInput[] = [
 export async function searchInstruments(params: InstrumentSearchParams) {
   const q = (params.q ?? "").trim();
   const limit = Math.min(Math.max(params.limit ?? 50, 1), 100);
-  const exchanges = params.exchange?.length ? params.exchange : ["NFO", "BFO", "NSE"];
+  const exchanges = params.exchange?.length ? params.exchange : DEFAULT_EXCHANGES;
   const istNow = new Date(Date.now() + 5.5 * 60 * 60 * 1000);
   const cutoff = new Date(Date.UTC(istNow.getUTCFullYear(), istNow.getUTCMonth(), istNow.getUTCDate()));
 
@@ -343,7 +387,7 @@ export async function ensureAssetForInstrument(instrumentToken: string): Promise
   const instrument = await prisma.instrument.findUnique({ where: { instrumentToken } });
   if (!instrument) throw notFound("Instrument not found");
 
-  const assetClass = isIndexUnderlying(instrument.name) ? "INDEX" : "STOCK";
+  const assetClass = assetClassForInstrument(instrument.name, instrument.exchange);
   const isCashEquity = instrument.instrumentType === "EQ";
   const symbol = instrument.tradingsymbol;
   const strike = Number(instrument.strike);
@@ -360,7 +404,7 @@ export async function ensureAssetForInstrument(instrumentToken: string): Promise
         contractSize: instrument.lotSize,
         tickSize: instrument.tickSize,
         minQty: 1,
-        maxLeverage: isCashEquity ? 20 : 10,
+        maxLeverage: 500,
         feedSource: isCashEquity ? "nse" : "kite",
         instrumentToken,
         expiry: instrument.expiry,
@@ -370,6 +414,11 @@ export async function ensureAssetForInstrument(instrumentToken: string): Promise
       },
     });
     await publishRegistry().catch(() => undefined);
+    // Fire-and-forget: give the new contract chart history from Kite so it
+    // does not start life with an empty graph (live worker builds forward).
+    void import("./history.service.js")
+      .then((m) => m.backfillHistory(asset.id))
+      .catch(() => undefined);
     return asset;
   } catch (err) {
     if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === "P2002") {

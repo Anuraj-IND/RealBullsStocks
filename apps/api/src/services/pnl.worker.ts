@@ -1,4 +1,4 @@
-import { unrealizedPnl, equity as computeEquity, freeMargin, marginLevel } from "@realbulls/engine";
+import { unrealizedPnl, equity as computeEquity, freeMargin, marginLevel, quoteToInr } from "@realbulls/engine";
 import type { AccountSnapshot, OrderSide } from "@realbulls/shared";
 import { prisma } from "../lib/prisma.js";
 import { redis, accountChannel, getCachedPrice } from "../lib/redis.js";
@@ -18,13 +18,17 @@ async function snapshotAccount(accountId: string): Promise<AccountSnapshot | nul
     const asset = await prisma.asset.findUnique({ where: { id: p.assetId } });
     if (!asset) continue;
     const mid = (await getCachedPrice(asset.symbol)) ?? D.num(p.avgEntryPrice);
-    unrealized += unrealizedPnl({
-      side: p.side as OrderSide,
-      qty: D.num(p.qty),
-      avgEntryPrice: D.num(p.avgEntryPrice),
-      markPrice: mid,
-      contractSize: D.num(asset.contractSize),
-    });
+    unrealized += quoteToInr(
+      unrealizedPnl({
+        side: p.side as OrderSide,
+        qty: D.num(p.qty),
+        avgEntryPrice: D.num(p.avgEntryPrice),
+        markPrice: mid,
+        contractSize: D.num(asset.contractSize),
+      }),
+      asset.quoteCurrency,
+      env.usdInr,
+    );
   }
   unrealized = D.toMoney(unrealized);
   const balance = D.num(account.balance);

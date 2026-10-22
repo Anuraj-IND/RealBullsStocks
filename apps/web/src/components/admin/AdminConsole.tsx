@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 import { Logo } from "@/components/ui/Logo";
 import { Card, Stat, Badge } from "@/components/ui/Card";
-import { cls, fmtPrice } from "@/lib/format";
+import { cls, fmtMarket } from "@/lib/format";
 import { useMoney } from "@/lib/money";
 import { SEGMENTS, SEGMENT_LABELS } from "@realbulls/shared";
 import { useAuthStore, toast, useUiStore } from "@/lib/store";
@@ -32,6 +32,7 @@ import {
   useCreateTenant,
   useCreateUser,
 } from "@/lib/adminHooks";
+import { useQuoteCurrencyMap } from "@/lib/hooks";
 
 type Tab = "overview" | "admins" | "users" | "trades" | "ledger" | "positions" | "risk" | "audit" | "tenants";
 
@@ -69,8 +70,6 @@ interface Created {
 
 export default function AdminConsole() {
   const user = useAuthStore((s) => s.user);
-  const currency = useUiStore((s) => s.currency);
-  const setCurrency = useUiStore((s) => s.setCurrency);
   const [tab, setTab] = useState<Tab>("overview");
   const [created, setCreated] = useState<Created | null>(null);
   const [levTarget, setLevTarget] = useState<{ id: string; email: string; segments: Record<string, number> } | null>(null);
@@ -127,22 +126,7 @@ export default function AdminConsole() {
           <span className={cls("badge shrink-0", isSuper ? "bg-lime/15 text-lime" : "bg-primary/20 text-accent")}>{user.role}</span>
         </div>
         <div className="flex shrink-0 items-center gap-2">
-          <div className="flex items-center border border-line">
-            <button
-              onClick={() => setCurrency("USD")}
-              className={cls("px-2 py-1 text-xs", currency === "USD" ? "bg-accent/15 text-accent" : "text-muted hover:text-ink")}
-              title="Show amounts in USD"
-            >
-              $<span className="hidden sm:inline"> USD</span>
-            </button>
-            <button
-              onClick={() => setCurrency("INR")}
-              className={cls("px-2 py-1 text-xs", currency === "INR" ? "bg-accent/15 text-accent" : "text-muted hover:text-ink")}
-              title="Show amounts in INR"
-            >
-              ₹<span className="hidden sm:inline"> INR</span>
-            </button>
-          </div>
+          <span className="badge shrink-0 bg-primary/20 text-accent">₹ INR</span>
           <Link href="/terminal" className="btn-ghost py-1.5 text-xs">
             ← Terminal
           </Link>
@@ -286,7 +270,7 @@ function AdminsTab({
               </select>
             </label>
           )}
-          <NumField label={`Starting balance (optional, ${money.currency})`} value={form.startingBalance} onChange={(v) => setForm({ ...form, startingBalance: v })} />
+          <NumField label="Starting balance (optional, ₹)" value={form.startingBalance} onChange={(v) => setForm({ ...form, startingBalance: v })} />
           <button className="btn-primary w-full" onClick={submit} disabled={createUser.isPending}>
             {createUser.isPending ? "Creating…" : "Create admin"}
           </button>
@@ -427,7 +411,7 @@ function UsersTab({
         <div className="space-y-3">
           <TextField label="Client name" value={form.name} onChange={(v) => setForm({ ...form, name: v })} placeholder="Rahul Sharma" />
           <TextField label="Password (blank = auto)" value={form.password} onChange={(v) => setForm({ ...form, password: v })} placeholder="min 6 chars" />
-          <NumField label={`Starting balance (optional, ${money.currency})`} value={form.startingBalance} onChange={(v) => setForm({ ...form, startingBalance: v })} />
+          <NumField label="Starting balance (optional, ₹)" value={form.startingBalance} onChange={(v) => setForm({ ...form, startingBalance: v })} />
           <button className="btn-primary w-full" onClick={submit} disabled={createUser.isPending}>
             {createUser.isPending ? "Creating…" : "Create client & get user ID"}
           </button>
@@ -540,6 +524,7 @@ function TradesTab() {
   const [status, setStatus] = useState("CLOSED");
   const money = useMoney();
   const { data, isLoading } = useAdminTrades(status);
+  const qc = useQuoteCurrencyMap();
   const s = data?.summary;
 
   return (
@@ -588,8 +573,8 @@ function TradesTab() {
                   <td className={cls("px-3 py-2", t.side === "BUY" ? "text-up" : "text-down")}>{t.side}</td>
                   <td className="num px-3 py-2">{t.qty}</td>
                   <td className="num px-3 py-2">1:{t.leverage}</td>
-                  <td className="num px-3 py-2">{fmtPrice(t.entry)}</td>
-                  <td className="num px-3 py-2">{fmtPrice(t.exit)}</td>
+                  <td className="num px-3 py-2">{fmtMarket(t.entry, qc.get(t.symbol))}</td>
+                  <td className="num px-3 py-2">{fmtMarket(t.exit, qc.get(t.symbol))}</td>
                   <td className="num px-3 py-2">{money.fmt(t.marginUsed)}</td>
                   <td className="num px-3 py-2">{money.fmt(t.commission)}</td>
                   <td className={cls("num px-3 py-2 font-semibold", t.realizedPnl >= 0 ? "text-up" : "text-down")}>{money.signed(t.realizedPnl)}</td>
@@ -678,7 +663,7 @@ function LedgerTab() {
                 <option value="ADJUSTMENT">ADJUSTMENT (±)</option>
               </select>
             </label>
-            <NumField label={`Amount (${money.currency})`} value={amount} onChange={setAmount} />
+            <NumField label="Amount (₹)" value={amount} onChange={setAmount} />
             <div className="flex items-end gap-2 md:col-span-4">
               <input className="input" value={memo} onChange={(e) => setMemo(e.target.value)} placeholder="Memo" />
               <button
@@ -702,7 +687,7 @@ function LedgerTab() {
                 Post
               </button>
             </div>
-            {money.currency === "INR" && <p className="text-[11px] text-muted">Stored as USD in the ledger: {money.fmt(money.toUsd(parseFloat(amount) || 0))}</p>}
+            <p className="text-[11px] text-muted">Entered in rupees.</p>
           </div>
         )}
 
@@ -757,6 +742,7 @@ function LivePositionsTab() {
   const positions = useAdminLivePositions();
   const money = useMoney();
   const forceClose = useForceClose();
+  const qc = useQuoteCurrencyMap();
   const list = positions.data?.positions ?? [];
   const totalPnl = list.reduce((acc, p) => acc + p.unrealizedPnl, 0);
   const totalMargin = list.reduce((acc, p) => acc + p.marginUsed, 0);
@@ -790,11 +776,11 @@ function LivePositionsTab() {
                   <td className={cls("px-3 py-2", p.side === "BUY" ? "text-up" : "text-down")}>{p.side}</td>
                   <td className="num px-3 py-2">{p.qty}</td>
                   <td className="num px-3 py-2">1:{p.leverage}</td>
-                  <td className="num px-3 py-2">{fmtPrice(p.entry)}</td>
-                  <td className="num px-3 py-2">{fmtPrice(p.mark)}</td>
+                  <td className="num px-3 py-2">{fmtMarket(p.entry, qc.get(p.symbol))}</td>
+                  <td className="num px-3 py-2">{fmtMarket(p.mark, qc.get(p.symbol))}</td>
                   <td className="num px-3 py-2">{money.fmt(p.marginUsed)}</td>
                   <td className={cls("num px-3 py-2 font-semibold", p.unrealizedPnl >= 0 ? "text-up" : "text-down")}>{money.signed(p.unrealizedPnl)}</td>
-                  <td className="num px-3 py-2">{fmtPrice(p.liquidationPrice)}</td>
+                  <td className="num px-3 py-2">{fmtMarket(p.liquidationPrice, qc.get(p.symbol))}</td>
                   <td className="px-3 py-2">
                     <button className="btn-ghost py-1 text-xs" onClick={() => forceClose.mutate(p.id)}>
                       Force close
@@ -1119,10 +1105,8 @@ function FundsModal({ target, onClose }: { target: FundTarget; onClose: () => vo
               </select>
             </label>
             <div className="col-span-2">
-              <NumField label={`Amount (${money.currency})`} value={amount} onChange={setAmount} />
-              {money.currency === "INR" && (
-                <p className="mt-1 text-[11px] text-muted">Posted as {money.fmt(money.toUsd(parseFloat(amount) || 0))} — the ledger stores USD.</p>
-              )}
+              <NumField label="Amount (₹)" value={amount} onChange={setAmount} />
+              <p className="mt-1 text-[11px] text-muted">Entered in rupees.</p>
             </div>
           </div>
           <TextField label="Memo" value={memo} onChange={setMemo} />
@@ -1195,12 +1179,8 @@ function OwnFundsModal({ type, onClose }: { type: "DEPOSIT" | "WITHDRAWAL"; onCl
             </select>
           </label>
           <div>
-            <NumField label={`Amount (${money.currency})`} value={amount} onChange={setAmount} />
-            {money.currency === "INR" && (
-              <p className="mt-1 text-[11px] text-muted">
-                Posted as {money.fmt(money.toUsd(parseFloat(amount) || 0))} — the ledger stores USD.
-              </p>
-            )}
+            <NumField label="Amount (₹)" value={amount} onChange={setAmount} />
+            <p className="mt-1 text-[11px] text-muted">Entered in rupees.</p>
           </div>
           <TextField label="Memo" value={memo} onChange={setMemo} />
         </div>
@@ -1266,6 +1246,7 @@ function ClientDrawer({ userId, onClose }: { userId: string; onClose: () => void
   const [orderTake, setOrderTake] = useState(100);
   const { data, isLoading } = useAdminUserDetail(userId, { tradeStatus, tradeTake, orderTake });
   const money = useMoney();
+  const qc = useQuoteCurrencyMap();
   const winRate = data?.stats.winRate;
   return (
     <div className="fixed inset-0 z-[75] flex justify-end bg-black/60" onClick={onClose}>
@@ -1321,8 +1302,8 @@ function ClientDrawer({ userId, onClose }: { userId: string; onClose: () => void
                       <td className="num px-3 py-2 font-semibold">{p.symbol}</td>
                       <td className={cls("px-3 py-2", p.side === "BUY" ? "text-up" : "text-down")}>{p.side}</td>
                       <td className="num px-3 py-2">{p.qty}</td>
-                      <td className="num px-3 py-2">{fmtPrice(p.entry)}</td>
-                      <td className="num px-3 py-2">{fmtPrice(p.mark)}</td>
+                      <td className="num px-3 py-2">{fmtMarket(p.entry, qc.get(p.symbol))}</td>
+                      <td className="num px-3 py-2">{fmtMarket(p.mark, qc.get(p.symbol))}</td>
                       <td className="num px-3 py-2">{money.fmt(p.marginUsed)}</td>
                       <td className={cls("num px-3 py-2 font-semibold", p.unrealizedPnl >= 0 ? "text-up" : "text-down")}>{money.signed(p.unrealizedPnl)}</td>
                     </tr>
@@ -1384,8 +1365,8 @@ function ClientDrawer({ userId, onClose }: { userId: string; onClose: () => void
                         <td className={cls("px-3 py-2", t.side === "BUY" ? "text-up" : "text-down")}>{t.side}</td>
                         <td className="num px-3 py-2">{t.qty}</td>
                         <td className="num px-3 py-2">1:{t.leverage}</td>
-                        <td className="num px-3 py-2">{fmtPrice(t.entry)}</td>
-                        <td className="num px-3 py-2">{fmtPrice(t.exit ?? t.mark)}</td>
+                        <td className="num px-3 py-2">{fmtMarket(t.entry, qc.get(t.symbol))}</td>
+                        <td className="num px-3 py-2">{fmtMarket(t.exit ?? t.mark, qc.get(t.symbol))}</td>
                         <td className="num px-3 py-2">{money.fmt(t.marginUsed)}</td>
                         <td className={cls("num px-3 py-2 font-semibold", pnl >= 0 ? "text-up" : "text-down")}>{money.signed(pnl)}</td>
                         <td className="px-3 py-2">
@@ -1435,9 +1416,9 @@ function ClientDrawer({ userId, onClose }: { userId: string; onClose: () => void
                       <td className={cls("px-3 py-2", o.side === "BUY" ? "text-up" : "text-down")}>{o.side}</td>
                       <td className="px-3 py-2 text-xs">{o.type}</td>
                       <td className="num px-3 py-2">{o.qty}</td>
-                      <td className="num px-3 py-2">{fmtPrice(o.price ?? o.filledPrice)}</td>
+                      <td className="num px-3 py-2">{fmtMarket(o.price ?? o.filledPrice, qc.get(o.symbol))}</td>
                       <td className="num px-3 py-2 text-xs">
-                        {o.filledQty > 0 ? `${o.filledQty} @ ${fmtPrice(o.filledPrice)}` : "—"}
+                        {o.filledQty > 0 ? `${o.filledQty} @ ${fmtMarket(o.filledPrice, qc.get(o.symbol))}` : "-"}
                       </td>
                       <td className="num px-3 py-2">1:{o.leverage}</td>
                       <td className="px-3 py-2">

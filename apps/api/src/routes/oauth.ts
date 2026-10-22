@@ -109,7 +109,7 @@ export default async function oauthRoutes(app: FastifyInstance) {
           data: { tenantId: tenant.id, email: profile.email, passwordHash: "!", displayName: profile.name, role: "TRADER", status: "ACTIVE" },
         });
         const account = await prisma.account.create({
-          data: { userId: user.id, tenantId: tenant.id, type: "DEMO", baseCurrency: "USD", balance: 0, isPrimary: true },
+          data: { userId: user.id, tenantId: tenant.id, type: "DEMO", baseCurrency: "INR", balance: 0, isPrimary: true },
         });
         await prisma.watchlist.create({ data: { userId: user.id, name: "Default" } });
         void account;

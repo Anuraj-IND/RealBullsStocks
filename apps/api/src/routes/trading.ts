@@ -4,11 +4,13 @@ import { placeOrderSchema, closePositionSchema, type OrderDTO, type OrderSide } 
 import { prisma } from "../lib/prisma.js";
 import { authenticate } from "../plugins/auth.js";
 import { primaryAccount } from "../lib/accounts.js";
-import { badRequest, notFound } from "../lib/errors.js";
-import { placeOrder, closePosition, closeAllPositions, cancelOrder, accountUnrealized } from "../services/order.service.js";
+import { badRequest, notFound, unprocessable } from "../lib/errors.js";
+import { placeOrder, closePosition, cancelOrder, accountUnrealized } from "../services/order.service.js";
 import { getQuoteForAsset } from "../services/market.service.js";
 import { toOrderDTO, toPositionDTO } from "../lib/serialize.js";
+import { filledQtyByPosition } from "../lib/positions.js";
 import { D } from "../lib/money.js";
+import { env } from "../env.js";
 
 export default async function tradingRoutes(app: FastifyInstance) {
   app.addHook("preHandler", authenticate);
@@ -200,21 +202,60 @@ export default async function tradingRoutes(app: FastifyInstance) {
       orderBy: { closedAt: "desc" },
       take: 200,
     });
-    return { positions: await Promise.all(positions.map(async (p) => toPositionDTO(p, await symbolFor(p.assetId)))) };
+    // Closed rows carry remaining qty (0 when fully closed) — report the
+    // traded quantity instead, same pattern as the admin routes.
+    const originalQty = await filledQtyByPosition(positions.map((p) => p.id));
+    return {
+      positions: await Promise.all(
+        positions.map(async (p) => {
+          const dto = toPositionDTO(p, await symbolFor(p.assetId));
+          return { ...dto, qty: originalQty.get(p.id) ?? dto.qty };
+        }),
+      ),
+    };
   });
+
+  // Manual closes require a minimum holding period so users cannot exploit
+  // a stale quote: by close time the market has moved on. Fail with the
+  // remaining wait; aged positions close instantly. Risk-engine closes call
+  // the service directly and bypass the gate.
+  function holdRemainingSec(openedAt: Date): number {
+    if (env.minHoldMs <= 0) return 0;
+    return Math.max(0, Math.ceil((env.minHoldMs - (Date.now() - openedAt.getTime())) / 1000));
+  }
 
   app.post("/positions/:id/close", async (request) => {
     const auth = request.auth!;
     const { id } = request.params as { id: string };
     const body = closePositionSchema.parse(request.body ?? {});
     const account = await primaryAccount(auth.sub);
+    const existing = await prisma.position.findUnique({ where: { id } });
+    if (!existing || existing.accountId !== account.id) throw notFound("Position not found");
+    if (existing.status !== "OPEN") throw badRequest("Position is not open");
+    const waitSec = holdRemainingSec(existing.openedAt);
+    if (waitSec > 0) throw unprocessable(`Wait ${waitSec}s before closing this position`, "POSITION_TOO_NEW");
     return closePosition({ positionId: id, accountId: account.id, qty: body.qty, createdBy: auth.sub, enforceHours: true });
   });
 
   app.post("/positions/close-all", async (request) => {
     const auth = request.auth!;
     const account = await primaryAccount(auth.sub);
-    const results = await closeAllPositions(account.id, auth.sub, true);
-    return { closed: results.length, results };
+    const open = await prisma.position.findMany({ where: { accountId: account.id, status: "OPEN" } });
+    const results = [];
+    const skipped: Array<{ positionId: string; symbol: string; retryAfterSec: number }> = [];
+    for (const p of open) {
+      const waitSec = holdRemainingSec(p.openedAt);
+      if (waitSec > 0) {
+        skipped.push({ positionId: p.id, symbol: await symbolFor(p.assetId), retryAfterSec: waitSec });
+        continue;
+      }
+      try {
+        results.push(await closePosition({ positionId: p.id, accountId: account.id, createdBy: auth.sub, enforceHours: true }));
+      } catch (err) {
+        if ((err as { code?: string }).code === "MARKET_CLOSED") continue;
+        throw err;
+      }
+    }
+    return { closed: results.length, results, skipped };
   });
 }

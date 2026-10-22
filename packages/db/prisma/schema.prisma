@@ -509,6 +509,9 @@ model Notification {
   kind      String   
   title     String
   body      String?
+  // Structured display payload (amounts in USD/market terms; the client
+  // renders them in ₹). Legacy rows have null → client-side fallback.
+  data      Json?
   read      Boolean  @default(false)
   createdAt DateTime @default(now())
 

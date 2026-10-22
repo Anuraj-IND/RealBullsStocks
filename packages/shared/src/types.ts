@@ -100,7 +100,7 @@ export type WsServerMessage =
   | { op: "account"; data: AccountSnapshot }
   | { op: "position"; data: PositionDTO }
   | { op: "order"; data: OrderDTO }
-  | { op: "notification"; data: { id: string; kind: string; title: string; body: string | null; createdAt: string } }
+  | { op: "notification"; data: { id: string; kind: string; title: string; body: string | null; data?: { amountInr?: number; price?: number; quoteCurrency?: string } | null; createdAt: string } }
   | { op: "alert"; data: { level: "info" | "warning" | "danger"; message: string } }
   | { op: "pong"; ts: number }
   | { op: "error"; message: string };

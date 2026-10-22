@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { assetMarketLabel, cls, fmtPrice } from "@/lib/format";
+import { assetMarketLabel, cls, fmtMarket } from "@/lib/format";
 import { useSymbolStats, useUiStore } from "@/lib/store";
 import { useAssets } from "@/lib/hooks";
 
@@ -61,15 +61,15 @@ export function SymbolHeader() {
       <div className="flex items-center gap-6">
         <div className="text-right">
           <div className={cls("num text-xl font-bold", flash === "up" ? "text-up" : flash === "down" ? "text-down" : "text-ink")}>
-            {fmtPrice(hasLive ? mid : undefined)}
+            {fmtMarket(hasLive ? mid : undefined, asset?.quoteCurrency)}
           </div>
           <div className={cls("num text-xs", !hasLive ? "text-muted" : up ? "text-up" : "text-down")}>
             {hasLive ? `${up ? "+" : ""}${changePct.toFixed(2)}%` : "Market is not live yet"}
           </div>
         </div>
-        <Stat label="Bid" value={fmtPrice(hasLive ? bid : undefined)} tone="down" />
-        <Stat label="Ask" value={fmtPrice(hasLive ? ask : undefined)} tone="up" />
-        <Stat label="Spread" value={fmtPrice(hasLive ? spread : undefined)} />
+        <Stat label="Bid" value={fmtMarket(hasLive ? bid : undefined, asset?.quoteCurrency)} tone="down" />
+        <Stat label="Ask" value={fmtMarket(hasLive ? ask : undefined, asset?.quoteCurrency)} tone="up" />
+        <Stat label="Spread" value={fmtMarket(hasLive ? spread : undefined, asset?.quoteCurrency)} />
       </div>
     </div>
   );

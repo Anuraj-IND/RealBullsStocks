@@ -18,7 +18,7 @@ const JSON_LD = {
       operatingSystem: "Web",
       description:
         "Multi-asset trading terminal with real-time charts, market depth, margin calculator, analytics and a full ledger.",
-      offers: { "@type": "Offer", price: "0", priceCurrency: "USD" },
+      offers: { "@type": "Offer", price: "0", priceCurrency: "INR" },
     },
   ],
 };

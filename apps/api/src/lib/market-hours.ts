@@ -28,6 +28,14 @@ export function isMarketOpen(
 
   if (cls === "CRYPTO") return true;
 
+  // MCX commodity derivatives trade 9:00-23:30 IST, Mon-Fri. Other
+  // commodities keep the coarse weekday rule.
+  if ((asset.segment ?? "").toUpperCase().startsWith("MCX")) {
+    const { minutes, day } = localClock(nowMs, IST);
+    if (day < 1 || day > 5) return false;
+    return minutes >= 9 * 60 && minutes < 23 * 60 + 30;
+  }
+
   if (cls === "FOREX" || cls === "COMMODITY") {
     const { day } = localClock(nowMs, 0);
     return day >= 1 && day <= 5; 

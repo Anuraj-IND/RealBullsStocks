@@ -328,7 +328,7 @@ export default async function adminRoutes(app: FastifyInstance) {
       },
     });
     const account = await prisma.account.create({
-      data: { userId: user.id, tenantId, type: "DEMO", baseCurrency: "USD", balance: 0, isPrimary: true },
+      data: { userId: user.id, tenantId, type: "DEMO", baseCurrency: "INR", balance: 0, isPrimary: true },
     });
     if ((body.startingBalance ?? 0) > 0) {
       await postLedgerChanges(account.id, [{ type: "DEPOSIT", delta: body.startingBalance!, memo: "Initial balance (admin)" }], { createdBy: auth.sub });

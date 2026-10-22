@@ -1,45 +1,60 @@
 "use client";
 
-import { useUiStore } from "./store";
+import { DEFAULT_USD_INR } from "@realbulls/engine";
 
 
-export const USD_INR = Number(process.env.NEXT_PUBLIC_USD_INR ?? 83.5);
+// Foreign→₹ display rate for market-terms prices (see format.ts fmtMarket).
+// Ledger math is ₹ end to end; this no longer touches ledger figures.
+export const USD_INR = Number(process.env.NEXT_PUBLIC_USD_INR ?? DEFAULT_USD_INR);
+
+function fmtInrRaw(inr: number | null | undefined): string {
+  if (inr === null || inr === undefined || Number.isNaN(inr)) return "—";
+  return inr.toLocaleString("en-IN", {
+    style: "currency",
+    currency: "INR",
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  });
+}
+
+// Pure (hook-free) ₹ renderers for non-component call sites (WS toasts).
+// Hook version below delegates to these.
+export function fmtInr(inr: number | null | undefined): string {
+  return fmtInrRaw(inr);
+}
+
+export function signedInr(inr: number | null | undefined): string {
+  if (inr === null || inr === undefined || Number.isNaN(inr)) return "—";
+  const s = inr > 0 ? "+" : "";
+  return `${s}${fmtInrRaw(inr)}`;
+}
 
 export interface Money {
-  currency: "USD" | "INR";
-  convert: (usd: number) => number;
+  convert: (inr: number) => number;
   toUsd: (amount: number) => number;
-  fmt: (usd: number | null | undefined) => string;
-  signed: (usd: number | null | undefined) => string;
+  fmt: (inr: number | null | undefined) => string;
+  signed: (inr: number | null | undefined) => string;
 }
 
 
 export function useMoney(): Money {
-  const currency = useUiStore((s) => s.currency);
-
-  function convert(usd: number): number {
-    return currency === "INR" ? usd * USD_INR : usd;
+  // Ledger is ₹ and the API returns ₹: identity at the display choke point.
+  // Market-terms prices still convert via fmtMarket (format.ts).
+  function convert(inr: number): number {
+    return inr;
   }
 
-  function fmt(usd: number | null | undefined): string {
-    if (usd === null || usd === undefined || Number.isNaN(usd)) return "—";
-    return convert(usd).toLocaleString(currency === "INR" ? "en-IN" : "en-US", {
-      style: "currency",
-      currency,
-      minimumFractionDigits: 2,
-      maximumFractionDigits: 2,
-    });
+  function fmt(inr: number | null | undefined): string {
+    return fmtInrRaw(inr);
   }
 
-  function signed(usd: number | null | undefined): string {
-    if (usd === null || usd === undefined || Number.isNaN(usd)) return "—";
-    const s = usd > 0 ? "+" : "";
-    return `${s}${fmt(usd)}`;
+  function signed(inr: number | null | undefined): string {
+    return signedInr(inr);
   }
 
   function toUsd(amount: number): number {
-    return currency === "INR" ? amount / USD_INR : amount;
+    return amount;
   }
 
-  return { currency, convert, toUsd, fmt, signed };
+  return { convert, toUsd, fmt, signed };
 }

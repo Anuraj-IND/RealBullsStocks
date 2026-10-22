@@ -37,7 +37,7 @@ const SECTIONS: Section[] = [
     id: "margin",
     title: "Margin & leverage",
     items: [
-      ["What does leverage mean?", "Leverage lets you control a larger position with less margin. At 1:10 a $1,000 position requires $100 margin; at 1:20 it requires $50."],
+      ["What does leverage mean?", "Leverage lets you control a larger position with less margin. At 1:10 a ₹1,00,000 position requires ₹10,000 margin; at 1:20 it requires ₹5,000."],
       ["How is required margin calculated?", "Required margin = (quantity × price × contract size) ÷ leverage. The order ticket shows this live, alongside your available margin."],
       ["What is the stop-out level?", "If your account margin level falls to the stop-out threshold (5%), the platform automatically closes positions to protect the account."],
       ["What are swaps?", "Positions held overnight may incur a swap / rollover charge, which is recorded in your ledger."],

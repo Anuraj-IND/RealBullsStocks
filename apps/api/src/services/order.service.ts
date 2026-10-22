@@ -8,10 +8,12 @@ import {
   evaluateRisk,
   marginLevel,
   isLossLimitReached,
+  quoteToInr,
 } from "@realbulls/engine";
 import type { OrderSide, PlaceOrderInput } from "@realbulls/shared";
 import { prisma } from "../lib/prisma.js";
 import { D } from "../lib/money.js";
+import { env } from "../env.js";
 import { badRequest, notFound, unprocessable } from "../lib/errors.js";
 import {
   getEffectiveConfig,
@@ -34,6 +36,39 @@ import { isAssetMarketOpen } from "./market-status.service.js";
 
 const OPPOSITE: Record<OrderSide, OrderSide> = { BUY: "SELL", SELL: "BUY" };
 
+// Money math is rupee-denominated. Market-terms prices enter ₹ math through
+// this single choke point: INR passes, foreign converts at the foreign→₹
+// rate. Prices stay in market terms in storage/display.
+function inrForAsset(price: number, asset: Pick<Asset, "quoteCurrency">): number {
+  return quoteToInr(price, asset.quoteCurrency, env.usdInr);
+}
+
+// User-facing rupee rendering for error strings (ledger stays USD).
+function inr(amountInr: number): string {
+  return `₹${(amountInr).toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+}
+
+function unrealizedUsd(args: {
+  side: OrderSide;
+  qty: number;
+  avgEntryPrice: number;
+  markPrice: number;
+  contractSize: number;
+  quoteCurrency: string;
+}): number {
+  return quoteToInr(
+    unrealizedPnl({
+      side: args.side,
+      qty: args.qty,
+      avgEntryPrice: args.avgEntryPrice,
+      markPrice: args.markPrice,
+      contractSize: args.contractSize,
+    }),
+    args.quoteCurrency,
+    env.usdInr,
+  );
+}
+
 async function loadAsset(assetId: string): Promise<Asset> {
   const asset = await prisma.asset.findUnique({ where: { id: assetId } });
   if (!asset) throw notFound("Asset not found");
@@ -47,13 +82,18 @@ async function accountUnrealized(accountId: string): Promise<number> {
     const asset = await prisma.asset.findUnique({ where: { id: p.assetId } });
     if (!asset) continue;
     const q = await getQuoteForAsset(asset);
-    const mark = q?.mid ?? D.num(p.avgEntryPrice);
-    total += unrealizedPnl({
+    // Fresh (<5min) quote first; else the last cached price at its real age;
+    // entry only when no quote ever existed. Never silently zero-out a live
+    // loss — an old last-price still beats an assumed break-even.
+    const raw = q ? null : await getQuote(asset.symbol);
+    const mark = q?.mid ?? raw?.mid ?? D.num(p.avgEntryPrice);
+    total += unrealizedUsd({
       side: p.side as OrderSide,
       qty: D.num(p.qty),
       avgEntryPrice: D.num(p.avgEntryPrice),
       markPrice: mark,
       contractSize: D.num(asset.contractSize),
+      quoteCurrency: asset.quoteCurrency,
     });
   }
   return D.toMoney(total);
@@ -166,7 +206,7 @@ export async function placeOrder(params: {
   const preview = previewOrder({
     side: input.side,
     qty: input.qty,
-    price: quote.mid,
+    price: inrForAsset(quote.mid, asset),
     contractSize,
     leverage,
     commissionPerLot,
@@ -180,17 +220,31 @@ export async function placeOrder(params: {
 
   if (!preview.affordable) {
     throw unprocessable(
-      `Insufficient margin: need ${preview.requiredMargin.toFixed(2)} + ${preview.commission.toFixed(2)} fee`,
+      `Insufficient margin: need ${inr(preview.requiredMargin)} (incl. fee)`,
       "INSUFFICIENT_MARGIN",
     );
   }
 
   const SLIPPAGE = 0.0001;
-  const fill = input.side === "BUY" ? quote.mid * (1 + SLIPPAGE) : quote.mid * (1 - SLIPPAGE);
+  const fillMkt = input.side === "BUY" ? quote.mid * (1 + SLIPPAGE) : quote.mid * (1 - SLIPPAGE);
+  const fill = inrForAsset(fillMkt, asset);
   const margin = requiredMargin({ qty: input.qty, price: fill, contractSize, leverage });
-  const liq = liquidationPrice({ side: input.side, avgEntryPrice: fill, leverage, stopOutPct: risk.stopOutPct });
+  const liq = liquidationPrice({ side: input.side, avgEntryPrice: fillMkt, leverage, stopOutPct: risk.stopOutPct });
 
   const result = await prisma.$transaction(async (tx) => {
+    // Re-check affordability inside the transaction: the pre-check above ran
+    // before the tx, so a concurrent close/fill could have moved the balance
+    // in between (once filled an order on a negative balance this way).
+    // postLedgerChangesWithin takes FOR UPDATE below, serializing racers here.
+    const fresh = await tx.account.findUniqueOrThrow({ where: { id: accountId } });
+    const unrealizedNow = await accountUnrealized(accountId);
+    const availableNow = D.num(fresh.balance) + unrealizedNow - D.num(fresh.marginUsed);
+    if (availableNow < preview.requiredMargin) {
+      throw unprocessable(
+        `Insufficient margin: need ${preview.requiredMargin.toFixed(2)} (incl. fee)`,
+        "INSUFFICIENT_MARGIN",
+      );
+    }
     const position = await tx.position.create({
       data: {
         tenantId,
@@ -198,7 +252,7 @@ export async function placeOrder(params: {
         assetId: asset.id,
         side: input.side,
         qty: D.dec(input.qty),
-        avgEntryPrice: D.dec(fill),
+        avgEntryPrice: D.dec(fillMkt),
         leverage,
         marginUsed: D.dec(margin),
         commission: D.dec(preview.commission),
@@ -217,10 +271,10 @@ export async function placeOrder(params: {
         side: input.side,
         type: "MARKET",
         qty: D.dec(input.qty),
-        price: D.dec(fill),
+        price: D.dec(fillMkt),
         leverage,
         status: "FILLED",
-        filledPrice: D.dec(fill),
+        filledPrice: D.dec(fillMkt),
         filledQty: D.dec(input.qty),
         filledAt: new Date(),
         positionId: position.id,
@@ -249,13 +303,16 @@ export async function placeOrder(params: {
       orderId: order.id,
       positionId: position.id,
       status: "FILLED",
-      fillPrice: fill,
+      fillPrice: fillMkt,
       marginUsed: margin,
       commission: preview.commission,
     };
   }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
 
-  await notifyAccountOwner(accountId, "FILL", `Filled ${input.side} ${input.qty} ${asset.symbol}`, `@ ${fill}`).catch(() => undefined);
+  await notifyAccountOwner(accountId, "FILL", `Filled ${input.side} ${input.qty} ${asset.symbol}`, `@ ${fillMkt}`, {
+    price: fillMkt,
+    quoteCurrency: asset.quoteCurrency,
+  }).catch(() => undefined);
   return result;
 }
 
@@ -288,7 +345,7 @@ export async function closePosition(params: {
   const brokerage = await getBrokerage(posAccount?.userId ?? "", config);
   const isDerivative = isDerivativeSegment(resolveAssetSegment(asset));
   const quote = await getExecutableQuote(position.tenantId, asset, config);
-  const exitPrice = executablePrice(OPPOSITE[position.side as OrderSide], quote);
+  const exitMkt = executablePrice(OPPOSITE[position.side as OrderSide], quote);
 
   const totalQty = D.num(position.qty);
   const closeQty = Math.min(qty ?? totalQty, totalQty);
@@ -296,13 +353,17 @@ export async function closePosition(params: {
 
   const contractSize = D.num(asset.contractSize);
   const pnl = D.toMoney(
-    realizedPnl({
-      side: position.side as OrderSide,
-      qty: closeQty,
-      entryPrice: D.num(position.avgEntryPrice),
-      exitPrice,
-      contractSize,
-    }),
+    quoteToInr(
+      realizedPnl({
+        side: position.side as OrderSide,
+        qty: closeQty,
+        entryPrice: D.num(position.avgEntryPrice),
+        exitPrice: exitMkt,
+        contractSize,
+      }),
+      asset.quoteCurrency,
+      env.usdInr,
+    ),
   );
   const commissionClose = D.toMoney(brokerageForQty(isDerivative, closeQty, brokerage));
   const releasedMargin = D.toMoney((D.num(position.marginUsed) * closeQty) / totalQty);
@@ -320,7 +381,7 @@ export async function closePosition(params: {
           realizedPnl: { increment: pnl },
           commission: { increment: commissionClose },
           closedAt: new Date(),
-          closedPrice: D.dec(exitPrice),
+          closedPrice: D.dec(exitMkt),
         },
       });
     } else {
@@ -356,8 +417,10 @@ export async function closePosition(params: {
     await postLedgerChangesWithin(tx, accountId, changes, { createdBy });
   }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
 
-  await notifyAccountOwner(accountId, "FILL", `Closed ${asset.symbol}`, `Realized ${pnl >= 0 ? "+" : ""}${pnl}`).catch(() => undefined);
-  return { positionId, closedQty: closeQty, exitPrice, realizedPnl: pnl, fullyClosed };
+  await notifyAccountOwner(accountId, "FILL", `Closed ${asset.symbol}`, `Realized ${pnl >= 0 ? "+" : ""}${pnl}`, {
+    amountInr: pnl,
+  }).catch(() => undefined);
+  return { positionId, closedQty: closeQty, exitPrice: exitMkt, realizedPnl: pnl, fullyClosed };
 }
 
 export async function closeAllPositions(
@@ -409,13 +472,17 @@ export async function runRiskCycle(): Promise<RiskCycleResult> {
     const q = await getQuote(asset.symbol);
     if (!q) continue;
     const pnl = D.toMoney(
-      unrealizedPnl({
-        side: position.side as OrderSide,
-        qty: D.num(position.qty),
-        avgEntryPrice: D.num(position.avgEntryPrice),
-        markPrice: q.mid,
-        contractSize: D.num(asset.contractSize),
-      }),
+      quoteToInr(
+        unrealizedPnl({
+          side: position.side as OrderSide,
+          qty: D.num(position.qty),
+          avgEntryPrice: D.num(position.avgEntryPrice),
+          markPrice: q.mid,
+          contractSize: D.num(asset.contractSize),
+        }),
+        asset.quoteCurrency,
+        env.usdInr,
+      ),
     );
     await prisma.position.update({ where: { id: position.id }, data: { unrealizedPnl: D.dec(pnl) } });
     markedAccounts.add(position.accountId);
@@ -551,7 +618,8 @@ async function fillPendingOrder(orderId: string): Promise<void> {
     });
     return;
   }
-  const fill = executablePrice(order.side as OrderSide, quote);
+  const fillMkt = executablePrice(order.side as OrderSide, quote);
+  const fill = quoteToInr(fillMkt, asset.quoteCurrency, env.usdInr);
   const qty = D.num(order.qty);
   const contractSize = D.num(asset.contractSize);
   const margin = requiredMargin({ qty, price: fill, contractSize, leverage: order.leverage });
@@ -563,9 +631,17 @@ async function fillPendingOrder(orderId: string): Promise<void> {
     return;
   }
 
-  const liq = liquidationPrice({ side: order.side as OrderSide, avgEntryPrice: fill, leverage: order.leverage });
+  const liq = liquidationPrice({ side: order.side as OrderSide, avgEntryPrice: fillMkt, leverage: order.leverage });
 
   await prisma.$transaction(async (tx) => {
+    // Same in-tx re-check as market opens: balance may have moved between
+    // the pre-check above and this commit.
+    const fresh = await tx.account.findUniqueOrThrow({ where: { id: order.accountId } });
+    const unrealizedNow = await accountUnrealized(order.accountId);
+    if (D.num(fresh.balance) + unrealizedNow - D.num(fresh.marginUsed) < margin) {
+      await tx.order.update({ where: { id: orderId }, data: { status: "REJECTED", rejectReason: "Insufficient margin at trigger" } });
+      return;
+    }
     const position = await tx.position.create({
       data: {
         tenantId: order.tenantId,
@@ -573,7 +649,7 @@ async function fillPendingOrder(orderId: string): Promise<void> {
         assetId: order.assetId,
         side: order.side,
         qty: D.dec(qty),
-        avgEntryPrice: D.dec(fill),
+        avgEntryPrice: D.dec(fillMkt),
         leverage: order.leverage,
         marginUsed: D.dec(margin),
         commission: D.dec(D.toMoney(brokerageForQty(isDerivative, qty, brokerage))),
@@ -585,7 +661,7 @@ async function fillPendingOrder(orderId: string): Promise<void> {
     });
     await tx.order.update({
       where: { id: orderId },
-      data: { status: "FILLED", filledPrice: D.dec(fill), filledQty: D.dec(qty), filledAt: new Date(), positionId: position.id },
+      data: { status: "FILLED", filledPrice: D.dec(fillMkt), filledQty: D.dec(qty), filledAt: new Date(), positionId: position.id },
     });
     await tx.account.update({ where: { id: order.accountId }, data: { marginUsed: { increment: margin } } });
     await postLedgerChangesWithin(tx, order.accountId, [

@@ -13,7 +13,19 @@ export default async function notificationRoutes(app: FastifyInstance) {
     ]);
     return {
       unread,
-      notifications: items.map((n) => ({ id: n.id, kind: n.kind, title: n.title, body: n.body, read: n.read, createdAt: n.createdAt.toISOString() })),
+      notifications: items.map((n) => ({
+        id: n.id,
+        kind: n.kind,
+        title: n.title,
+        body: n.body,
+        data: ((n as unknown as { data?: unknown }).data ?? null) as {
+          amountInr?: number;
+          price?: number;
+          quoteCurrency?: string;
+        } | null,
+        read: n.read,
+        createdAt: n.createdAt.toISOString(),
+      })),
     };
   });
 

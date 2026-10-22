@@ -31,6 +31,15 @@ export default async function ledgerRoutes(app: FastifyInstance) {
       orderBy: { closedAt: "asc" },
     });
     const originalQty = await filledQtyByPosition(closed.map((p) => p.id));
+    // quoteCurrency per asset so clients render entry/exit in ₹ (additive).
+    const quoteByAsset = new Map(
+      (
+        await prisma.asset.findMany({
+          where: { id: { in: [...new Set(closed.map((p) => p.assetId))] } },
+          select: { id: true, quoteCurrency: true },
+        })
+      ).map((a) => [a.id, a.quoteCurrency]),
+    );
 
     let wins = 0;
     let losses = 0;
@@ -89,6 +98,7 @@ export default async function ledgerRoutes(app: FastifyInstance) {
         qty: originalQty.get(p.id) ?? D.num(p.qty),
         entry: D.num(p.avgEntryPrice),
         exit: p.closedPrice ? D.num(p.closedPrice) : null,
+        quoteCurrency: quoteByAsset.get(p.assetId) ?? null,
         realizedPnl: D.num(p.realizedPnl),
         openedAt: p.openedAt.toISOString(),
         closedAt: p.closedAt?.toISOString() ?? null,

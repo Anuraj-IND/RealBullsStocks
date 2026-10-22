@@ -45,8 +45,8 @@ func main() {
 		log.Printf("twelvedata feed: %d symbols (forex/india/commodities)", len(cfg.TwelveDataSymbols))
 	}
 	if cfg.ZerodhaKey != "" {
-		manager.Add(feed.NewKite(manager, st, cfg.ZerodhaKey, cfg.ZerodhaSymbols, cfg.RegistryKey, cfg.ZerodhaPollMS))
-		log.Printf("zerodha feed: %d static symbols + registry (live once connected)", len(cfg.ZerodhaSymbols))
+		manager.Add(feed.NewKiteTicker(manager, st, cfg.ZerodhaKey, cfg.RegistryKey))
+		log.Printf("kite ticker: live WS ticks (registry-driven, auto-resubscribing)")
 	}
 	go manager.Start(ctx)
 

@@ -21,7 +21,15 @@ export function AccountBar() {
 
   return (
     <div className={cls("grid gap-px overflow-hidden border-b border-line bg-line/60", advanced ? "grid-cols-2 md:grid-cols-6" : "grid-cols-3")}>
-      <Cell label="Balance" value={money.fmt(balance)} />
+      {/* Balance shows live walk-away money (settled + open P&L) — the ledger
+          balance underneath stays settled by design (margin math and the 95%
+          trigger would double-count otherwise). */}
+      <Cell
+        label="Balance"
+        value={money.fmt(equity)}
+        tone={unrealized >= 0 ? "up" : "down"}
+        sub={`settled ${money.fmt(balance)}`}
+      />
       <Cell label="Equity" value={money.fmt(equity)} />
       <Cell label="Unrealized P&L" value={money.signed(unrealized)} tone={unrealized >= 0 ? "up" : "down"} />
       {advanced && <Cell label="Margin used" value={money.fmt(marginUsed)} />}
@@ -37,13 +45,14 @@ export function AccountBar() {
   );
 }
 
-function Cell({ label, value, tone = "default" }: { label: string; value: string; tone?: "default" | "up" | "down" | "warn" }) {
+function Cell({ label, value, tone = "default", sub }: { label: string; value: string; tone?: "default" | "up" | "down" | "warn"; sub?: string }) {
   const toneClass =
     tone === "up" ? "text-lime" : tone === "down" ? "text-brandbright" : tone === "warn" ? "text-amber" : "text-ink";
   return (
     <div className="bg-navy2 px-2.5 py-1.5 sm:px-4 sm:py-2">
       <div className="text-[9px] uppercase tracking-wider text-muted sm:text-[10px]">{label}</div>
       <div className={cls("num mt-0.5 whitespace-nowrap text-[12px] font-semibold sm:text-sm", toneClass)}>{value}</div>
+      {sub && <div className="num mt-0.5 whitespace-nowrap text-[10px] text-muted">{sub}</div>}
     </div>
   );
 }

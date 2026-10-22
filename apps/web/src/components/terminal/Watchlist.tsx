@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { assetMarketLabel, cls, fmtPrice, isDerivativeSegment } from "@/lib/format";
+import { assetMarketLabel, cls, fmtMarket, isDerivativeSegment } from "@/lib/format";
 import {
   useAssets,
   useWatchlist,
@@ -11,9 +11,10 @@ import {
   useRenameWatchlist,
   useDeleteWatchlist,
   useInstrumentSearch,
+  useQuoteCurrency,
   type InstrumentResult,
 } from "@/lib/hooks";
-import { useMarketStore, useSymbolStats, useUiStore, toast } from "@/lib/store";
+import { useMarketStore, useAuthStore, useSymbolStats, useUiStore, toast } from "@/lib/store";
 import { ws } from "@/lib/ws";
 import { apiPost, ApiError } from "@/lib/api";
 import { useQueryClient } from "@tanstack/react-query";
@@ -31,18 +32,6 @@ function instrumentContract(r: InstrumentResult): string {
   if (r.instrumentType === "EQ") return "Stock";
   if (r.instrumentType === "FUT") return "Futures";
   return `${r.strike > 0 ? r.strike : ""} ${r.optionType ?? r.instrumentType}`.trim();
-}
-
-function expiryBadge(iso: string | null, exchange: string): string {
-  if (!iso) return "";
-  const d = new Date(`${iso}T00:00:00.000Z`);
-  if (Number.isNaN(d.getTime())) return "";
-  const day = String(d.getUTCDate()).padStart(2, "0");
-  const month = d.toLocaleString("en-US", { month: "short", timeZone: "UTC" }).toUpperCase();
-  const next = new Date(d);
-  next.setUTCDate(d.getUTCDate() + 7);
-  const monthly = next.getUTCMonth() !== d.getUTCMonth();
-  return `${day} ${month} ${monthly ? "MONTHLY" : "WEEKLY"}`;
 }
 
 const CATEGORIES = [
@@ -145,6 +134,7 @@ export function Watchlist() {
       qc.invalidateQueries({ queryKey: ["positions"] });
       qc.invalidateQueries({ queryKey: ["orders"] });
       qc.invalidateQueries({ queryKey: ["ledger"] });
+      useAuthStore.getState().refreshSession().catch(() => undefined);
       setQuick(null);
     } catch (err) {
       toast.error("Order rejected", err instanceof ApiError ? err.message : "Unknown error");
@@ -183,6 +173,32 @@ export function Watchlist() {
         .slice(0, 5)
     : [];
   const showResults = searchEnabled && (instrumentResults.length > 0 || localExtras.length > 0);
+
+  // Monthly expiry is always the LAST expiry of its (exchange, underlying,
+  // calendar month) group — weekly contracts expire earlier in the same
+  // month. This replaces the old "+7 days crosses a month" guess, which
+  // mislabeled holiday-shifted monthly expiries (e.g. TCS Nov 2026 moved to
+  // Mon 23rd). Generic across every underlying — no symbol lists.
+  const expiryBadges = useMemo(() => {
+    const latest = new Map<string, string>();
+    for (const r of instrumentResults) {
+      if (!r.expiry) continue;
+      const key = `${r.exchange}__${r.underlying.toUpperCase()}__${r.expiry.slice(0, 7)}`;
+      const prev = latest.get(key);
+      if (!prev || r.expiry > prev) latest.set(key, r.expiry);
+    }
+    const badges = new Map<string, string>();
+    for (const r of instrumentResults) {
+      if (!r.expiry) continue;
+      const d = new Date(`${r.expiry}T00:00:00.000Z`);
+      if (Number.isNaN(d.getTime())) continue;
+      const key = `${r.exchange}__${r.underlying.toUpperCase()}__${r.expiry.slice(0, 7)}`;
+      const day = String(d.getUTCDate()).padStart(2, "0");
+      const month = d.toLocaleString("en-US", { month: "short", timeZone: "UTC" }).toUpperCase();
+      badges.set(r.instrumentToken, `${day} ${month} ${latest.get(key) === r.expiry ? "MONTHLY" : "WEEKLY"}`);
+    }
+    return badges;
+  }, [instrumentResults]);
 
   const searchRows = [
     ...localExtras.map((asset) => ({ kind: "asset" as const, asset, rank: assetKindRank(asset.segment) })),
@@ -321,7 +337,7 @@ export function Watchlist() {
               if (row.kind === "instrument") {
                 const r = row.instrument;
                 const already = items.some((i) => i.symbol === r.tradingsymbol);
-                const badge = expiryBadge(r.expiry, r.exchange);
+                const badge = expiryBadges.get(r.instrumentToken) ?? "";
                 return (
                   <button
                     key={r.instrumentToken}
@@ -489,6 +505,7 @@ function Row({
   onRemove?: () => void;
 }) {
   const { tick, changePct } = useSymbolStats(symbol);
+  const quoteCurrency = useQuoteCurrency(symbol);
   const closed = marketOpen === false;
   const price = tick?.mid ?? mid;
   const hasLive = Boolean(tick?.mid) || (quoteKind === "live" && (mid ?? 0) > 0);
@@ -519,7 +536,7 @@ function Row({
 
       <div className="flex items-center gap-2">
         <div className="text-right">
-          <div className="num text-sm">{hasLive ? fmtPrice(price) : "—"}</div>
+          <div className="num text-sm">{hasLive ? fmtMarket(price, quoteCurrency) : "—"}</div>
           <div className={cls("num text-[11px]", !hasLive ? "text-muted" : changePct >= 0 ? "text-up" : "text-down")}>
             {hasLive ? `${changePct >= 0 ? "+" : ""}${changePct.toFixed(2)}%` : "—"}
           </div>

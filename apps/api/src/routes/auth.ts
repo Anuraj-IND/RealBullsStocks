@@ -83,7 +83,7 @@ export default async function authRoutes(app: FastifyInstance) {
     const identifier = (body.identifier ?? body.email ?? "").trim();
 
     const failKey = `login:fail:${identifier.toLowerCase()}:${request.ip}`;
-    const fails = Number((await redis.get(failKey)) ?? 0);
+    const fails = env.loginRateLimit ? Number((await redis.get(failKey)) ?? 0) : 0;
     if (fails >= MAX_LOGIN_FAILS) throw new HttpError(429, "Too many failed attempts. Try again later.");
 
     const identifierWhere = { OR: [{ email: identifier }, { username: identifier }] };
@@ -93,7 +93,7 @@ export default async function authRoutes(app: FastifyInstance) {
 
     const ok = user ? await verifyPassword(body.password, user.passwordHash) : false;
     if (!user || user.status !== "ACTIVE" || !ok) {
-      await redis.multi().incr(failKey).expire(failKey, LOGIN_LOCK_SECONDS).exec();
+      if (env.loginRateLimit) await redis.multi().incr(failKey).expire(failKey, LOGIN_LOCK_SECONDS).exec();
       throw unauthorized("Invalid credentials");
     }
     await redis.del(failKey);
@@ -134,7 +134,7 @@ export default async function authRoutes(app: FastifyInstance) {
       data: { tenantId: tenant.id, email, username, passwordHash, displayName: body.name, role: "TRADER", status: "ACTIVE" },
     });
     const account = await prisma.account.create({
-      data: { userId: user.id, tenantId: tenant.id, type: "DEMO", baseCurrency: "USD", balance: 0, isPrimary: true },
+      data: { userId: user.id, tenantId: tenant.id, type: "DEMO", baseCurrency: "INR", balance: 0, isPrimary: true },
     });
     if (env.signupStartingBalance > 0) {
       await postLedgerChanges(account.id, [{ type: "DEPOSIT", delta: env.signupStartingBalance, memo: "Welcome balance" }], { createdBy: "signup" });

@@ -64,11 +64,24 @@ export function useAssets() {
     queryKey: ["assets"],
     queryFn: () => apiGet<{ assets: AssetRow[] }>("/assets"),
     staleTime: 30000,
+    // Poll: admin can change commission/leverage/segments at any time from
+    // another session, and cross-tab invalidation doesn't exist — without
+    // this the ticket prices off stale trading math indefinitely.
+    refetchInterval: 15000,
   });
 }
 
-export function useWatchlist() {
-  return useQuery({
+export function useQuoteCurrency(symbol: string): string | undefined {
+  const assets = useAssets();
+  return assets.data?.assets.find((a) => a.symbol === symbol)?.quoteCurrency;
+}
+
+export function useQuoteCurrencyMap(): Map<string, string> {
+  const assets = useAssets();
+  return new Map((assets.data?.assets ?? []).map((a) => [a.symbol, a.quoteCurrency]));
+}
+
+export function useWatchlist() {  return useQuery({
     queryKey: ["watchlists"],
     queryFn: () => apiGet<{ watchlists: Array<{ id: string; name: string; items: WatchlistItem[] }> }>("/watchlists"),
     staleTime: 15000,
@@ -199,11 +212,16 @@ export function useLedger() {
 export function useClosePosition() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: ({ id, qty }: { id: string; qty?: number }) => apiPost(`/positions/${id}/close`, qty ? { qty } : {}),
+    mutationFn: ({ id, qty, symbol }: { id: string; qty?: number; symbol?: string }) =>
+      apiPost(`/positions/${id}/close`, qty ? { qty } : {}),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["positions"] });
       qc.invalidateQueries({ queryKey: ["ledger"] });
       qc.invalidateQueries({ queryKey: ["analytics"] });
+      // Balance + marginUsed live in the login-loaded session — refresh so
+      // the top bar shows the final posted balance immediately, not the
+      // pre-close one.
+      useAuthStore.getState().refreshSession().catch(() => undefined);
       toast.success("Position closed");
     },
     onError: (e: unknown) => toast.error("Close failed", e instanceof Error ? e.message : undefined),
@@ -213,12 +231,19 @@ export function useClosePosition() {
 export function useCloseAll() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: () => apiPost<{ closed: number }>("/positions/close-all"),
+    mutationFn: () => apiPost<{ closed: number; skipped?: Array<{ positionId: string; symbol: string; retryAfterSec: number }> }>("/positions/close-all"),
     onSuccess: (data) => {
       qc.invalidateQueries({ queryKey: ["positions"] });
       qc.invalidateQueries({ queryKey: ["ledger"] });
       qc.invalidateQueries({ queryKey: ["analytics"] });
-      toast.success("All positions closed", `${data?.closed ?? 0} position(s)`);
+      useAuthStore.getState().refreshSession().catch(() => undefined);
+      const skipped = data?.skipped ?? [];
+      if (skipped.length > 0) {
+        const maxWait = Math.max(...skipped.map((s) => s.retryAfterSec));
+        toast.success("Partially closed", `${data?.closed ?? 0} closed · ${skipped.length} need ${maxWait}s more`);
+      } else {
+        toast.success("All positions closed", `${data?.closed ?? 0} position(s)`);
+      }
     },
     onError: (e: unknown) => toast.error("Close all failed", e instanceof Error ? e.message : undefined),
   });
@@ -253,7 +278,7 @@ export interface AnalyticsResponse {
   maxDrawdown: number;
   equityCurve: Array<{ time: string; equity: number }>;
   dailyPnl: Array<{ date: string; pnl: number; trades: number }>;
-  tradeLog: Array<{ id: string; side: string; qty: number; entry: number; exit: number | null; realizedPnl: number; openedAt: string; closedAt: string | null }>;
+  tradeLog: Array<{ id: string; side: string; qty: number; entry: number; exit: number | null; quoteCurrency: string | null; realizedPnl: number; openedAt: string; closedAt: string | null }>;
 }
 
 export function useAnalytics() {
@@ -270,6 +295,7 @@ export interface AppNotification {
   kind: string;
   title: string;
   body: string | null;
+  data?: { amountInr?: number; price?: number; quoteCurrency?: string } | null;
   read: boolean;
   createdAt: string;
 }
