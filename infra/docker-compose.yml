@@ -78,7 +78,12 @@ services:
       ZERODHA_API_SECRET: ${ZERODHA_API_SECRET:-}
       ZERODHA_REDIRECT: ${ZERODHA_REDIRECT:-}
       ALLOW_SIGNUP: ${ALLOW_SIGNUP:-true}
-      SIGNUP_STARTING_BALANCE: ${SIGNUP_STARTING_BALANCE:-100000}
+      SIGNUP_STARTING_BALANCE: ${SIGNUP_STARTING_BALANCE:-8350000}
+      USD_INR: ${USD_INR:-83.5}
+      MIN_HOLD_MS: ${MIN_HOLD_MS:-15000}
+      QUOTE_BRIDGE_POLL_MS: ${QUOTE_BRIDGE_POLL_MS:-2000}
+      QUOTE_BRIDGE_STALE_MS: ${QUOTE_BRIDGE_STALE_MS:-8000}
+      LOGIN_RATE_LIMIT: ${LOGIN_RATE_LIMIT:-true}
       PNL_TICK_MS: "1000"
     ports:
       - "127.0.0.1:4000:4000"
@@ -132,6 +137,7 @@ services:
         NEXT_PUBLIC_ROOT_DOMAIN: ${ROOT_DOMAIN:-app.example.com}
         NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-/api}
         NEXT_PUBLIC_WS_URL: ${NEXT_PUBLIC_WS_URL:-wss://${PUBLIC_HOST:-localhost}/ws}
+        NEXT_PUBLIC_USD_INR: ${USD_INR:-83.5}
     image: realbulls-web:latest
     container_name: realbulls-web
     restart: unless-stopped
@@ -144,6 +150,7 @@ services:
       API_INTERNAL_URL: http://api:4000
       NEXT_PUBLIC_SITE_URL: https://${PUBLIC_HOST:-localhost}
       NEXT_PUBLIC_ROOT_DOMAIN: ${ROOT_DOMAIN:-app.example.com}
+      NEXT_PUBLIC_USD_INR: ${USD_INR:-83.5}
     ports:
       - "127.0.0.1:3000:3000"
     healthcheck:

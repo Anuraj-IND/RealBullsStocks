@@ -50,6 +50,7 @@ docker build -f infra/Dockerfile.web `
     --build-arg NEXT_PUBLIC_ROOT_DOMAIN="$Domain" `
     --build-arg NEXT_PUBLIC_API_URL="/api" `
     --build-arg NEXT_PUBLIC_WS_URL="wss://$Domain/ws" `
+    --build-arg NEXT_PUBLIC_USD_INR="83.5" `
     -t realbulls-web:latest .
 if ($LASTEXITCODE -ne 0) { throw "Failed to build realbulls-web" }
 
