@@ -6,8 +6,8 @@ param(
     [Parameter(Mandatory = $false)]
     [string]$DeployUser = "deploy",
 
-    [Parameter(Mandatory = $true, HelpMessage = "Your domain name, e.g. app.yourdomain.com")]
-    [string]$Domain,
+    [Parameter(Mandatory = $false)]
+    [string]$Domain = "143.110.188.40.sslip.io",
 
     [Parameter(Mandatory = $false)]
     [switch]$Bootstrap = $false
@@ -111,6 +111,13 @@ fi
 
 # Apply Prisma schema
 docker compose run --rm --no-deps -T api pnpm --filter @realbulls/db push
+
+# Check and execute one-shot INR migration if legacy USD accounts exist
+usd_count=$(docker compose exec -T postgres psql -U realbulls -d realbulls -tAc 'SELECT count(*) FROM "Account" WHERE "baseCurrency" = '\''USD'\''' 2>/dev/null || echo "0")
+if [ "${usd_count}" != "0" ] && [ -n "${usd_count}" ]; then
+    echo "Found ${usd_count} legacy USD accounts. Running one-shot INR migration..."
+    docker compose run --rm --no-deps -T api pnpm --filter @realbulls/api migrate:inr || true
+fi
 
 # Optional bootstrap seed
 if [ "${BOOTSTRAP:-false}" = "true" ]; then

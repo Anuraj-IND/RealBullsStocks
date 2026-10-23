@@ -9,6 +9,7 @@
     "build": "tsc --noEmit",
     "typecheck": "tsc --noEmit",
     "lint": "echo \"no lint\"",
+    "migrate:inr": "tsx scripts/migrate-inr.ts",
     "test:admin-scope": "tsx scripts/test-admin-scope.ts"
   },
   "dependencies": {
