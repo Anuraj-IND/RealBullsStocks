@@ -294,9 +294,22 @@ export interface ClientDetail {
     wins: number;
     losses: number;
     winRate: number | null;
+    grantedToClients: number | null;
+    clientStats: {
+      realizedPnl: number;
+      unrealizedPnl: number;
+      netPnl: number;
+      commission: number;
+      trades: number;
+      openTrades: number;
+      wins: number;
+      losses: number;
+      winRate: number | null;
+    } | null;
   };
   openPositions: Array<{
     id: string;
+    email: string;
     symbol: string;
     side: string;
     qty: number;
@@ -309,6 +322,7 @@ export interface ClientDetail {
   tradesTotal: number;
   trades: Array<{
     id: string;
+    email: string;
     symbol: string;
     assetClass: string;
     side: string;
@@ -328,6 +342,7 @@ export interface ClientDetail {
   ordersTotal: number;
   orders: Array<{
     id: string;
+    email: string;
     symbol: string;
     assetClass: string;
     side: string;

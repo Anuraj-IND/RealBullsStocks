@@ -513,36 +513,34 @@ function Row({
   return (
     <div
       className={cls(
-        "group flex cursor-pointer items-center gap-2 border-b border-line/60 px-2 py-2 transition-colors",
+        "group flex cursor-pointer items-center gap-2 overflow-hidden border-b border-line/60 px-2 py-2 transition-colors",
         active ? "bg-slate" : "hover:bg-slate/50",
         locked && "opacity-60",
       )}
       onClick={onClick}
     >
-      <span className={cls("h-1.5 w-1.5 shrink-0", changePct >= 0 ? "bg-lime" : "bg-brandbright")} />
+      <span className={cls("h-1.5 w-1.5 shrink-0 self-start mt-1.5", changePct >= 0 ? "bg-lime" : "bg-brandbright")} />
       <div className="min-w-0 flex-1">
-        <div className="flex items-center gap-1.5">
-          <span className="num truncate text-sm font-semibold">{symbol}</span>
-          <span className="shrink-0 rounded bg-slate/60 px-1 py-px text-[9px] font-bold uppercase tracking-wide text-muted">
-            {assetMarketLabel(assetClass, segment)}
-          </span>
-          {closed && (
-            <span className="shrink-0 rounded bg-brand/15 px-1 py-px text-[9px] font-bold uppercase tracking-wide text-brandbright" title={marketStatusReason}>
-              CLOSED
+        <div className="flex items-center justify-between gap-2">
+          <span className="num min-w-0 flex-1 truncate text-sm font-semibold">{symbol}</span>
+          <span className="num shrink-0 text-sm">{hasLive ? fmtMarket(price, quoteCurrency) : "—"}</span>
+        </div>
+        <div className="mt-1 flex items-center justify-between gap-2">
+          <span className="flex min-w-0 items-center gap-1.5">
+            <span className="shrink-0 rounded bg-slate/60 px-1 py-px text-[9px] font-bold uppercase tracking-wide text-muted">
+              {assetMarketLabel(assetClass, segment)}
             </span>
-          )}
-        </div>
-      </div>
-
-      <div className="flex items-center gap-2">
-        <div className="text-right">
-          <div className="num text-sm">{hasLive ? fmtMarket(price, quoteCurrency) : "—"}</div>
-          <div className={cls("num text-[11px]", !hasLive ? "text-muted" : changePct >= 0 ? "text-up" : "text-down")}>
-            {hasLive ? `${changePct >= 0 ? "+" : ""}${changePct.toFixed(2)}%` : "—"}
-          </div>
-        </div>
-        <div className="flex shrink-0 items-center gap-1">
-          {locked ? (
+            {closed && (
+              <span className="shrink-0 rounded bg-brand/15 px-1 py-px text-[9px] font-bold uppercase tracking-wide text-brandbright" title={marketStatusReason}>
+                CLOSED
+              </span>
+            )}
+          </span>
+          <div className="flex shrink-0 items-center gap-1.5">
+            <span className={cls("num text-[11px]", !hasLive ? "text-muted" : changePct >= 0 ? "text-up" : "text-down")}>
+              {hasLive ? `${changePct >= 0 ? "+" : ""}${changePct.toFixed(2)}%` : "—"}
+            </span>
+            {locked ? (
             <span className="rounded bg-slate/70 px-2 py-1.5 text-[10px] font-bold leading-none text-muted">
               NO ACCESS
             </span>
@@ -589,6 +587,7 @@ function Row({
               </button>
             </>
           )}
+          </div>
         </div>
         {onRemove && (
           <button

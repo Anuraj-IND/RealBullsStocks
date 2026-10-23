@@ -32,7 +32,7 @@ import {
   useCreateTenant,
   useCreateUser,
 } from "@/lib/adminHooks";
-import { useQuoteCurrencyMap } from "@/lib/hooks";
+import { useQuoteCurrencyMap, useActiveAccount } from "@/lib/hooks";
 
 type Tab = "overview" | "admins" | "users" | "trades" | "ledger" | "positions" | "risk" | "audit" | "tenants";
 
@@ -133,7 +133,7 @@ export default function AdminConsole() {
         </div>
       </header>
 
-      <div className="flex gap-1 overflow-x-auto border-b border-line px-4">
+      <div className="flex flex-wrap gap-1 border-b border-line px-4">
         {tabs.map((t) => (
           <button key={t} onClick={() => setTab(t)} className={cls("tab whitespace-nowrap capitalize", activeTab === t && "tab-active")}>
             {TAB_LABELS[t] ?? t}
@@ -181,7 +181,22 @@ type FundTarget = {
 
 function OverviewTab({ isSuper, onFund }: { isSuper: boolean; onFund: (type: "DEPOSIT" | "WITHDRAWAL") => void }) {
   const { data } = useAdminSummary();
+  const users = useAdminUsers();
   const money = useMoney();
+  const activeAccount = useActiveAccount();
+  const [drill, setDrill] = useState<"pnl" | "brok" | null>(null);
+  // Scope-proof breakdown: "Total balance" alone reads as the admin's own
+  // money. Show whose is whose — mine vs held elsewhere vs combined.
+  const myBalance = activeAccount?.balance ?? 0;
+  const combined = data?.totalBalance ?? 0;
+  const heldElsewhere = Math.max(0, combined - myBalance);
+  const rows = users.data?.users ?? [];
+  const pnlRows = [...rows].sort((a, b) => a.pnl.net - b.pnl.net);
+  const brokRows = [...rows].filter((u) => u.pnl.commission !== 0).sort((a, b) => b.pnl.commission - a.pnl.commission);
+  const tot = (f: (u: (typeof rows)[number]) => number) => rows.reduce((s, u) => s + f(u), 0);
+  // Same inputs + formula as the breakdown totals row below — the box and
+  // the table can never disagree.
+  const netTotal = tot((u) => u.pnl.net);
   return (
     <div className="space-y-4">
       <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
@@ -191,14 +206,128 @@ function OverviewTab({ isSuper, onFund }: { isSuper: boolean; onFund: (type: "DE
         <Stat label="Open positions" value={data?.openPositions ?? "—"} />
       </div>
       <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
-        <Stat label="Total balance" value={money.fmt(data?.totalBalance ?? 0)} />
+        <Stat label="My balance" value={money.fmt(myBalance)} tone="up" />
+        <Stat label="Client deposits" value={money.fmt(heldElsewhere)} />
+        <Stat label="Combined total" value={money.fmt(combined)} />
         <Stat label="Open margin" value={money.fmt(data?.openMargin ?? 0)} tone="amber" />
-        <Stat label="Realized P&L (all)" value={money.signed(data?.totalRealizedPnl ?? 0)} tone={(data?.totalRealizedPnl ?? 0) >= 0 ? "up" : "down"} />
-        <Stat label="Brokerage earned" value={money.fmt(data?.totalCommission ?? 0)} tone="up" />
       </div>
       <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
-        <Stat label="Client deposits" value={money.fmt(data?.totalDeposits ?? 0)} />
+        <Stat
+          label="Realized P&L (all)"
+          value={money.signed(data?.totalRealizedPnl ?? 0)}
+          tone={(data?.totalRealizedPnl ?? 0) >= 0 ? "up" : "down"}
+          onClick={() => setDrill(drill === "pnl" ? null : "pnl")}
+        />
+        <Stat
+          label="Brokerage earned"
+          value={money.fmt(data?.totalCommission ?? 0)}
+          tone="up"
+          onClick={() => setDrill(drill === "brok" ? null : "brok")}
+        />
+        <Stat
+          label="Net P&L"
+          value={users.data ? money.signed(netTotal) : "—"}
+          tone={netTotal >= 0 ? "up" : "down"}
+          onClick={() => setDrill(drill === "pnl" ? null : "pnl")}
+        />
       </div>
+      {drill === "pnl" && (
+        <Card
+          title={`Realized P&L by ${isSuper ? "profile" : "client"} (total ${money.signed(data?.totalRealizedPnl ?? 0)})`}
+          action={
+            <button className="btn-ghost whitespace-nowrap px-2 py-0.5 text-[11px]" onClick={() => setDrill(null)}>
+              Close
+            </button>
+          }
+        >
+          <div className="overflow-x-auto">
+            <table className="w-full text-left text-sm">
+              <thead className="text-[11px] uppercase tracking-wider text-muted">
+                <tr>
+                  {["Profile", "Trades", "Realized", "Unrealized", "Net"].map((h) => (
+                    <th key={h} className="border-b border-line px-3 py-2 font-medium">
+                      {h}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {pnlRows.map((u) => (
+                  <tr key={u.id} className="border-b border-line/60 hover:bg-slate/40">
+                    <td className="px-3 py-2">
+                      <div className="num max-w-[200px] truncate font-medium" title={u.username ?? u.email}>{u.username ?? u.email}</div>
+                      <div className="truncate text-xs text-muted">{u.displayName ?? ""}</div>
+                    </td>
+                    <td className="num px-3 py-2">
+                      <div>{u.pnl.trades}</div>
+                      <div className="text-[11px] text-muted">{u.pnl.openTrades} open</div>
+                    </td>
+                    <td className={cls("num px-3 py-2", u.pnl.realized >= 0 ? "text-up" : "text-down")}>{money.signed(u.pnl.realized)}</td>
+                    <td className={cls("num px-3 py-2", u.pnl.unrealized >= 0 ? "text-up" : "text-down")}>{money.signed(u.pnl.unrealized)}</td>
+                    <td className={cls("num px-3 py-2 font-semibold", u.pnl.net >= 0 ? "text-up" : "text-down")}>{money.signed(u.pnl.net)}</td>
+                  </tr>
+                ))}
+                <tr className="bg-slate/40 font-semibold">
+                  <td className="px-3 py-2" colSpan={2}>Total ({pnlRows.length})</td>
+                  <td className="num px-3 py-2">{money.signed(tot((u) => u.pnl.realized))}</td>
+                  <td className="num px-3 py-2">{money.signed(tot((u) => u.pnl.unrealized))}</td>
+                  <td className="num px-3 py-2">{money.signed(tot((u) => u.pnl.net))}</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </Card>
+      )}
+      {drill === "brok" && (
+        <Card
+          title={`Brokerage by ${isSuper ? "profile" : "client"} (total ${money.fmt(data?.totalCommission ?? 0)})`}
+          action={
+            <button className="btn-ghost whitespace-nowrap px-2 py-0.5 text-[11px]" onClick={() => setDrill(null)}>
+              Close
+            </button>
+          }
+        >
+          <div className="overflow-x-auto">
+            <table className="w-full text-left text-sm">
+              <thead className="text-[11px] uppercase tracking-wider text-muted">
+                <tr>
+                  {["Profile", "Trades", "Brokerage"].map((h) => (
+                    <th key={h} className="border-b border-line px-3 py-2 font-medium">
+                      {h}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {brokRows.map((u) => (
+                  <tr key={u.id} className="border-b border-line/60 hover:bg-slate/40">
+                    <td className="px-3 py-2">
+                      <div className="num max-w-[200px] truncate font-medium" title={u.username ?? u.email}>{u.username ?? u.email}</div>
+                      <div className="truncate text-xs text-muted">{u.displayName ?? ""}</div>
+                    </td>
+                    <td className="num px-3 py-2">
+                      <div>{u.pnl.trades}</div>
+                      <div className="text-[11px] text-muted">{u.pnl.openTrades} open</div>
+                    </td>
+                    <td className="num px-3 py-2 font-semibold text-amber">{money.fmt(u.pnl.commission)}</td>
+                  </tr>
+                ))}
+                {brokRows.length === 0 && (
+                  <tr>
+                    <td colSpan={3} className="px-3 py-8 text-center text-muted">
+                      No brokerage earned yet.
+                    </td>
+                  </tr>
+                )}
+                <tr className="bg-slate/40 font-semibold">
+                  <td className="px-3 py-2" colSpan={2}>Total ({brokRows.length})</td>
+                  <td className="num px-3 py-2">{money.fmt(tot((u) => u.pnl.commission))}</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </Card>
+      )}
       {isSuper && (
         <div className="flex flex-wrap items-center gap-2">
           <button className="btn-buy py-1.5 text-xs" onClick={() => onFund("DEPOSIT")}>
@@ -287,12 +416,12 @@ function AdminsTab({
           </div>
         }
       >
-        <div className="overflow-x-auto">
+        <div className="hidden overflow-x-auto md:block">
           <table className="w-full text-left text-sm">
             <thead className="text-[11px] uppercase tracking-wider text-muted">
               <tr>
-                {["User", "Role", "Status", "Balance", "Leverage", "Last IP", "Actions"].map((h) => (
-                  <th key={h} className="border-b border-line px-3 py-2 font-medium">
+                {[["User", ""], ["Role", ""], ["Status", ""], ["Balance", ""], ["Leverage", "hidden md:table-cell"], ["Last IP", "hidden md:table-cell"], ["Actions", ""]].map(([h, hide]) => (
+                  <th key={h} className={`border-b border-line px-3 py-2 font-medium ${hide}`}>
                     {h}
                   </th>
                 ))}
@@ -305,9 +434,9 @@ function AdminsTab({
                 return (
                   <tr key={a.id} className="border-b border-line/60 hover:bg-slate/40">
                     <td className="px-3 py-2">
-                      <button className="text-left hover:text-accent" onClick={() => onOpenClient(a.id)} title="View details">
-                        <div className="num font-medium">{a.username ?? a.email}</div>
-                        <div className="text-xs text-muted">{a.displayName ?? ""}</div>
+                      <button className="max-w-[200px] text-left hover:text-accent" onClick={() => onOpenClient(a.id)} title={a.username ?? a.email}>
+                        <div className="num truncate font-medium">{a.username ?? a.email}</div>
+                        <div className="truncate text-xs text-muted">{a.displayName ?? ""}</div>
                       </button>
                     </td>
                     <td className="px-3 py-2">
@@ -325,27 +454,27 @@ function AdminsTab({
                       <Badge tone={a.status === "ACTIVE" ? "up" : "down"}>{a.status}</Badge>
                     </td>
                     <td className="num px-3 py-2">{money.fmt(acct?.balance ?? 0)}</td>
-                    <td className="px-3 py-2 text-xs text-muted">{segCount ? `${segCount} segment(s)` : "default"}</td>
-                    <td className="num px-3 py-2 text-xs text-muted">{a.lastLoginIp ?? "—"}</td>
+                    <td className="hidden px-3 py-2 text-xs text-muted md:table-cell">{segCount ? `${segCount} segment(s)` : "default"}</td>
+                    <td className="num hidden max-w-[130px] truncate px-3 py-2 text-xs text-muted md:table-cell" title={a.lastLoginIp ?? ""}>{a.lastLoginIp ?? "—"}</td>
                     <td className="px-3 py-2">
-                      <div className="flex flex-wrap gap-1">
-                        <button className="btn-ghost py-1 text-xs" onClick={() => onLeverage({ id: a.id, email: a.email, segments: a.segments ?? {} })}>
+                      <div className="flex max-w-[300px] flex-wrap gap-1">
+                        <button className="btn-ghost whitespace-nowrap px-2 py-0.5 text-[11px]" onClick={() => onLeverage({ id: a.id, email: a.email, segments: a.segments ?? {} })}>
                           Leverage
                         </button>
-                        <button className="btn-ghost py-1 text-xs" onClick={() => onFund({ id: a.id, email: a.email, accounts: a.accounts ?? [] })}>
+                        <button className="btn-ghost whitespace-nowrap px-2 py-0.5 text-[11px]" onClick={() => onFund({ id: a.id, email: a.email, accounts: a.accounts ?? [] })}>
                           Margin
                         </button>
-                        <button className="btn-ghost py-1 text-xs" onClick={() => onBrokerage({ id: a.id, name: a.username ?? a.email, brokerage: a.brokerage ?? null, brokeragePerOrder: a.brokeragePerOrder ?? null })}>
+                        <button className="btn-ghost whitespace-nowrap px-2 py-0.5 text-[11px]" onClick={() => onBrokerage({ id: a.id, name: a.username ?? a.email, brokerage: a.brokerage ?? null, brokeragePerOrder: a.brokeragePerOrder ?? null })}>
                           Brokerage
                         </button>
-                        <button className="btn-ghost py-1 text-xs" onClick={() => onSegments({ id: a.id, name: a.username ?? a.email, segments: a.allowedSegments ?? [] })}>
+                        <button className="btn-ghost whitespace-nowrap px-2 py-0.5 text-[11px]" onClick={() => onSegments({ id: a.id, name: a.username ?? a.email, segments: a.allowedSegments ?? [] })}>
                           Segments
                         </button>
-                        <button className="btn-ghost py-1 text-xs" onClick={() => onReset(a.id)}>
+                        <button className="btn-ghost whitespace-nowrap px-2 py-0.5 text-[11px]" onClick={() => onReset(a.id)}>
                           Reset
                         </button>
                         <button
-                          className="btn-ghost py-1 text-xs"
+                          className="btn-ghost whitespace-nowrap px-2 py-0.5 text-[11px]"
                           onClick={() => updateUser.mutate({ id: a.id, body: { status: a.status === "ACTIVE" ? "SUSPENDED" : "ACTIVE" } })}
                         >
                           {a.status === "ACTIVE" ? "Suspend" : "Activate"}
@@ -357,6 +486,56 @@ function AdminsTab({
               })}
             </tbody>
           </table>
+        </div>
+        <div className="divide-y divide-line/60 md:hidden">
+          {(admins.data?.admins ?? []).map((a) => (
+            <div key={a.id} className="px-3 py-3">
+              <div className="flex items-center justify-between gap-2">
+                <button className="min-w-0 flex-1 truncate text-left hover:text-accent" onClick={() => onOpenClient(a.id)} title={a.username ?? a.email}>
+                  <span className="num truncate text-sm font-medium">{a.username ?? a.email}</span>
+                  {a.displayName ? <span className="truncate text-xs text-muted"> · {a.displayName}</span> : null}
+                </button>
+                <Badge tone={a.status === "ACTIVE" ? "up" : "down"}>{a.status}</Badge>
+              </div>
+              <div className="mt-1 flex items-center gap-2 text-[11px]">
+                <Badge tone="info">{a.role}</Badge>
+                <span className="num text-muted">Balance {money.fmt(a.accounts?.[0]?.balance ?? 0)}</span>
+                {isSuper && (
+                  <select
+                    className="input w-36 py-1 text-xs"
+                    value={a.role}
+                    onChange={(e) => updateUser.mutate({ id: a.id, body: { role: e.target.value } })}
+                  >
+                    <option value="TENANT_ADMIN">TENANT_ADMIN</option>
+                    <option value="SUPER_ADMIN">SUPER_ADMIN</option>
+                  </select>
+                )}
+              </div>
+              <div className="mt-2 flex flex-wrap gap-1">
+                <button className="btn-ghost whitespace-nowrap px-2 py-0.5 text-[11px]" onClick={() => onLeverage({ id: a.id, email: a.email, segments: a.segments ?? {} })}>
+                  Leverage
+                </button>
+                <button className="btn-ghost whitespace-nowrap px-2 py-0.5 text-[11px]" onClick={() => onFund({ id: a.id, email: a.email, accounts: a.accounts ?? [] })}>
+                  Margin
+                </button>
+                <button className="btn-ghost whitespace-nowrap px-2 py-0.5 text-[11px]" onClick={() => onBrokerage({ id: a.id, name: a.username ?? a.email, brokerage: a.brokerage ?? null, brokeragePerOrder: a.brokeragePerOrder ?? null })}>
+                  Brokerage
+                </button>
+                <button className="btn-ghost whitespace-nowrap px-2 py-0.5 text-[11px]" onClick={() => onSegments({ id: a.id, name: a.username ?? a.email, segments: a.allowedSegments ?? [] })}>
+                  Segments
+                </button>
+                <button className="btn-ghost whitespace-nowrap px-2 py-0.5 text-[11px]" onClick={() => onReset(a.id)}>
+                  Reset
+                </button>
+                <button
+                  className="btn-ghost whitespace-nowrap px-2 py-0.5 text-[11px]"
+                  onClick={() => updateUser.mutate({ id: a.id, body: { status: a.status === "ACTIVE" ? "SUSPENDED" : "ACTIVE" } })}
+                >
+                  {a.status === "ACTIVE" ? "Suspend" : "Activate"}
+                </button>
+              </div>
+            </div>
+          ))}
         </div>
       </Card>
     </div>
@@ -428,12 +607,12 @@ function UsersTab({
           </div>
         }
       >
-        <div className="overflow-x-auto">
+        <div className="hidden overflow-x-auto md:block">
           <table className="w-full text-left text-sm">
             <thead className="text-[11px] uppercase tracking-wider text-muted">
               <tr>
-                {["User", "Role", "Status", "Balance", "Margin", "Net P&L", "Trades", "Last IP", "Actions", "Controls"].map((h) => (
-                  <th key={h} className="border-b border-line px-3 py-2 font-medium">
+                {[["User", ""], ["Role", ""], ["Status", ""], ["Balance", ""], ["Margin", "hidden md:table-cell"], ["Net P&L", ""], ["Trades", "hidden md:table-cell"], ["Last IP", "hidden md:table-cell"], ["Actions", ""]].map(([h, hide]) => (
+                  <th key={h} className={`border-b border-line px-3 py-2 font-medium ${hide}`}>
                     {h}
                   </th>
                 ))}
@@ -445,9 +624,9 @@ function UsersTab({
                 return (
                   <tr key={u.id} className="border-b border-line/60 hover:bg-slate/40">
                     <td className="px-3 py-2">
-                      <button className="text-left hover:text-accent" onClick={() => onOpenClient(u.id)} title="View details">
-                        <div className="num font-medium">{u.username ?? u.email}</div>
-                        <div className="text-xs text-muted">{u.displayName ?? ""}</div>
+                      <button className="max-w-[200px] text-left hover:text-accent" onClick={() => onOpenClient(u.id)} title={u.username ?? u.email}>
+                        <div className="num truncate font-medium">{u.username ?? u.email}</div>
+                        <div className="truncate text-xs text-muted">{u.displayName ?? ""}</div>
                       </button>
                     </td>
                     <td className="px-3 py-2">
@@ -457,25 +636,25 @@ function UsersTab({
                       <Badge tone={u.status === "ACTIVE" ? "up" : "down"}>{u.status}</Badge>
                     </td>
                     <td className="num px-3 py-2">{money.fmt(u.balance)}</td>
-                    <td className="num px-3 py-2">{money.fmt(u.marginUsed)}</td>
+                    <td className="num hidden px-3 py-2 md:table-cell">{money.fmt(u.marginUsed)}</td>
                     <td className="num px-3 py-2">
-                      <div className={cls("font-semibold", u.pnl.net >= 0 ? "text-up" : "text-down")}>{money.signed(u.pnl.net)}</div>
-                      <div className="text-[11px] text-muted">
+                      <div className={cls("whitespace-nowrap font-semibold", u.pnl.net >= 0 ? "text-up" : "text-down")}>{money.signed(u.pnl.net)}</div>
+                      <div className="whitespace-nowrap text-[11px] text-muted">
                         R {money.signed(u.pnl.realized)} · U {money.signed(u.pnl.unrealized)}
                       </div>
                     </td>
-                    <td className="num px-3 py-2">
+                    <td className="num hidden px-3 py-2 md:table-cell">
                       <div>{u.pnl.trades}</div>
                       <div className="text-[11px] text-muted">{u.pnl.openTrades} open</div>
                     </td>
-                    <td className="num px-3 py-2 text-xs text-muted">{u.lastLoginIp ?? "—"}</td>
+                    <td className="num hidden max-w-[130px] truncate px-3 py-2 text-xs text-muted md:table-cell" title={u.lastLoginIp ?? ""}>{u.lastLoginIp ?? "—"}</td>
                     <td className="px-3 py-2">
-                      <div className="flex gap-1">
-                        <button className="btn-ghost py-1 text-xs" onClick={() => onReset(u.id)}>
+                      <div className="flex max-w-[340px] flex-wrap gap-1">
+                        <button className="btn-ghost whitespace-nowrap px-2 py-0.5 text-[11px]" onClick={() => onReset(u.id)}>
                           Reset
                         </button>
                         <button
-                          className="btn-ghost py-1 text-xs"
+                          className="btn-ghost whitespace-nowrap px-2 py-0.5 text-[11px]"
                           onClick={() => {
                             const acc = u.accounts[0];
                             if (acc) setStatus.mutate({ id: acc.id, status: acc.status === "CLOSED" ? "ACTIVE" : "CLOSED" });
@@ -483,28 +662,24 @@ function UsersTab({
                         >
                           {u.accounts[0]?.status === "CLOSED" ? "Unfreeze" : "Freeze"}
                         </button>
-                        <button className="btn-ghost py-1 text-xs" onClick={() => updateUser.mutate({ id: u.id, body: { status: u.status === "ACTIVE" ? "SUSPENDED" : "ACTIVE" } })}>
+                        <button className="btn-ghost whitespace-nowrap px-2 py-0.5 text-[11px]" onClick={() => updateUser.mutate({ id: u.id, body: { status: u.status === "ACTIVE" ? "SUSPENDED" : "ACTIVE" } })}>
                           {u.status === "ACTIVE" ? "Suspend" : "Activate"}
                         </button>
                         {isSuper && (
-                          <button className="btn-ghost py-1 text-xs" onClick={() => updateUser.mutate({ id: u.id, body: { role: "TENANT_ADMIN" } })} title="Make admin">
+                          <button className="btn-ghost whitespace-nowrap px-2 py-0.5 text-[11px]" onClick={() => updateUser.mutate({ id: u.id, body: { role: "TENANT_ADMIN" } })} title="Make admin">
                             ↑ Admin
                           </button>
                         )}
-                      </div>
-                    </td>
-                    <td className="px-3 py-2">
-                      <div className="flex gap-1">
-                        <button className="btn-ghost py-1 text-xs" onClick={() => onLeverage({ id: u.id, email: u.email, segments: u.segments ?? {} })}>
+                        <button className="btn-ghost whitespace-nowrap px-2 py-0.5 text-[11px]" onClick={() => onLeverage({ id: u.id, email: u.email, segments: u.segments ?? {} })}>
                           Leverage
                         </button>
-                        <button className="btn-ghost py-1 text-xs" onClick={() => onFund({ id: u.id, email: u.email, accounts: u.accounts ?? [] })}>
+                        <button className="btn-ghost whitespace-nowrap px-2 py-0.5 text-[11px]" onClick={() => onFund({ id: u.id, email: u.email, accounts: u.accounts ?? [] })}>
                           Margin
                         </button>
-                        <button className="btn-ghost py-1 text-xs" onClick={() => onBrokerage({ id: u.id, name: u.username ?? u.email, brokerage: u.brokerage ?? null, brokeragePerOrder: u.brokeragePerOrder ?? null })}>
+                        <button className="btn-ghost whitespace-nowrap px-2 py-0.5 text-[11px]" onClick={() => onBrokerage({ id: u.id, name: u.username ?? u.email, brokerage: u.brokerage ?? null, brokeragePerOrder: u.brokeragePerOrder ?? null })}>
                           Brokerage
                         </button>
-                        <button className="btn-ghost py-1 text-xs" onClick={() => onSegments({ id: u.id, name: u.username ?? u.email, segments: u.allowedSegments ?? [] })}>
+                        <button className="btn-ghost whitespace-nowrap px-2 py-0.5 text-[11px]" onClick={() => onSegments({ id: u.id, name: u.username ?? u.email, segments: u.allowedSegments ?? [] })}>
                           Segments
                         </button>
                       </div>
@@ -514,6 +689,70 @@ function UsersTab({
               })}
             </tbody>
           </table>
+        </div>
+        <div className="divide-y divide-line/60 md:hidden">
+          {(users.data?.users ?? []).map((u) => (
+            <div key={u.id} className="px-3 py-3">
+              <div className="flex items-center justify-between gap-2">
+                <button className="min-w-0 flex-1 truncate text-left hover:text-accent" onClick={() => onOpenClient(u.id)} title={u.username ?? u.email}>
+                  <span className="num truncate text-sm font-medium">{u.username ?? u.email}</span>
+                  {u.displayName ? <span className="truncate text-xs text-muted"> · {u.displayName}</span> : null}
+                </button>
+                <Badge tone={u.status === "ACTIVE" ? "up" : "down"}>{u.status}</Badge>
+              </div>
+              <div className="mt-1 flex items-center gap-2 text-[11px]">
+                <Badge tone="info">{u.role}</Badge>
+                <span className="num text-muted">{u.pnl.trades} trades · {u.pnl.openTrades} open</span>
+              </div>
+              <div className="mt-2 grid grid-cols-2 gap-2">
+                <div>
+                  <div className="text-[10px] uppercase tracking-wider text-muted">Balance</div>
+                  <div className="num text-sm font-semibold">{money.fmt(u.balance)}</div>
+                </div>
+                <div>
+                  <div className="text-[10px] uppercase tracking-wider text-muted">Net P&amp;L</div>
+                  <div className={cls("num text-sm font-semibold", u.pnl.net >= 0 ? "text-up" : "text-down")}>{money.signed(u.pnl.net)}</div>
+                  <div className="num text-[11px] text-muted">
+                    R {money.signed(u.pnl.realized)} · U {money.signed(u.pnl.unrealized)}
+                  </div>
+                </div>
+              </div>
+              <div className="mt-2 flex flex-wrap gap-1">
+                <button className="btn-ghost whitespace-nowrap px-2 py-0.5 text-[11px]" onClick={() => onReset(u.id)}>
+                  Reset
+                </button>
+                <button
+                  className="btn-ghost whitespace-nowrap px-2 py-0.5 text-[11px]"
+                  onClick={() => {
+                    const acc = u.accounts[0];
+                    if (acc) setStatus.mutate({ id: acc.id, status: acc.status === "CLOSED" ? "ACTIVE" : "CLOSED" });
+                  }}
+                >
+                  {u.accounts[0]?.status === "CLOSED" ? "Unfreeze" : "Freeze"}
+                </button>
+                <button className="btn-ghost whitespace-nowrap px-2 py-0.5 text-[11px]" onClick={() => updateUser.mutate({ id: u.id, body: { status: u.status === "ACTIVE" ? "SUSPENDED" : "ACTIVE" } })}>
+                  {u.status === "ACTIVE" ? "Suspend" : "Activate"}
+                </button>
+                {isSuper && (
+                  <button className="btn-ghost whitespace-nowrap px-2 py-0.5 text-[11px]" onClick={() => updateUser.mutate({ id: u.id, body: { role: "TENANT_ADMIN" } })} title="Make admin">
+                    ↑ Admin
+                  </button>
+                )}
+                <button className="btn-ghost whitespace-nowrap px-2 py-0.5 text-[11px]" onClick={() => onLeverage({ id: u.id, email: u.email, segments: u.segments ?? {} })}>
+                  Leverage
+                </button>
+                <button className="btn-ghost whitespace-nowrap px-2 py-0.5 text-[11px]" onClick={() => onFund({ id: u.id, email: u.email, accounts: u.accounts ?? [] })}>
+                  Margin
+                </button>
+                <button className="btn-ghost whitespace-nowrap px-2 py-0.5 text-[11px]" onClick={() => onBrokerage({ id: u.id, name: u.username ?? u.email, brokerage: u.brokerage ?? null, brokeragePerOrder: u.brokeragePerOrder ?? null })}>
+                  Brokerage
+                </button>
+                <button className="btn-ghost whitespace-nowrap px-2 py-0.5 text-[11px]" onClick={() => onSegments({ id: u.id, name: u.username ?? u.email, segments: u.allowedSegments ?? [] })}>
+                  Segments
+                </button>
+              </div>
+            </div>
+          ))}
         </div>
       </Card>
     </div>
@@ -547,13 +786,13 @@ function TradesTab() {
                 </button>
               ))}
             </div>
-            <button className="btn-ghost py-1 text-xs" onClick={() => void downloadCsv(`/admin/trades.csv?status=${status}`, `realbulls-trades-${status.toLowerCase()}.csv`)}>
+            <button className="btn-ghost whitespace-nowrap px-2 py-0.5 text-[11px]" onClick={() => void downloadCsv(`/admin/trades.csv?status=${status}`, `realbulls-trades-${status.toLowerCase()}.csv`)}>
               Export CSV
             </button>
           </div>
         }
       >
-        <div className="overflow-x-auto">
+        <div className="hidden overflow-x-auto md:block">
           <table className="w-full text-left text-sm">
             <thead className="text-[11px] uppercase tracking-wider text-muted">
               <tr>
@@ -600,6 +839,36 @@ function TradesTab() {
             </tbody>
           </table>
         </div>
+        <div className="divide-y divide-line/60 md:hidden">
+          {(data?.trades ?? []).map((t) => (
+            <div key={t.id} className="px-3 py-3">
+              <div className="flex items-center justify-between gap-2">
+                <span className="num truncate text-sm font-semibold">{t.symbol}</span>
+                <Badge tone={t.status === "OPEN" ? "amber" : t.status === "LIQUIDATED" ? "down" : "neutral"}>{t.status}</Badge>
+              </div>
+              <div className="mt-1 flex items-center gap-2 text-[11px]">
+                <span className={t.side === "BUY" ? "text-up" : "text-down"}>{t.side}</span>
+                <span className="num text-muted">{t.qty} @ 1:{t.leverage}</span>
+                <span className="num truncate text-muted">{t.email}</span>
+              </div>
+              <div className="mt-2 grid grid-cols-2 gap-2">
+                <div>
+                  <div className="text-[10px] uppercase tracking-wider text-muted">Entry → Exit</div>
+                  <div className="num text-sm">{fmtMarket(t.entry, qc.get(t.symbol))} → {fmtMarket(t.exit, qc.get(t.symbol))}</div>
+                </div>
+                <div>
+                  <div className="text-[10px] uppercase tracking-wider text-muted">P&amp;L</div>
+                  <div className={cls("num text-sm font-semibold", t.realizedPnl >= 0 ? "text-up" : "text-down")}>{money.signed(t.realizedPnl)}</div>
+                  <div className="num text-[11px] text-muted">Fee {money.fmt(t.commission)} · Margin {money.fmt(t.marginUsed)}</div>
+                </div>
+              </div>
+              <div className="num mt-1 text-[10px] text-muted">{t.closedAt ? new Date(t.closedAt).toLocaleString() : t.openedAt ? new Date(t.openedAt).toLocaleString() : ""}</div>
+            </div>
+          ))}
+          {!isLoading && (data?.trades ?? []).length === 0 && (
+            <div className="px-3 py-8 text-center text-muted">No trades.</div>
+          )}
+        </div>
       </Card>
     </div>
   );
@@ -634,10 +903,10 @@ function LedgerTab() {
                 </option>
               ))}
             </select>
-            <button className="btn-ghost py-1 text-xs" onClick={() => setShowAdjust((v) => !v)}>
+            <button className="btn-ghost whitespace-nowrap px-2 py-0.5 text-[11px]" onClick={() => setShowAdjust((v) => !v)}>
               {showAdjust ? "Close" : "Adjust balance"}
             </button>
-            <button className="btn-ghost py-1 text-xs" onClick={() => void downloadCsv(`/admin/ledger.csv${type ? `?type=${type}` : ""}`, "realbulls-ledger.csv")}>
+            <button className="btn-ghost whitespace-nowrap px-2 py-0.5 text-[11px]" onClick={() => void downloadCsv(`/admin/ledger.csv${type ? `?type=${type}` : ""}`, "realbulls-ledger.csv")}>
               Export CSV
             </button>
           </div>
@@ -691,7 +960,7 @@ function LedgerTab() {
           </div>
         )}
 
-        <div className="overflow-x-auto">
+        <div className="hidden overflow-x-auto md:block">
           <table className="w-full text-left text-sm">
             <thead className="text-[11px] uppercase tracking-wider text-muted">
               <tr>
@@ -733,6 +1002,27 @@ function LedgerTab() {
             </tbody>
           </table>
         </div>
+        <div className="divide-y divide-line/60 md:hidden">
+          {(data?.entries ?? []).map((e) => (
+            <div key={e.id} className="px-3 py-3">
+              <div className="flex items-center justify-between gap-2">
+                <span className="num text-sm font-semibold">{money.fmt(e.amount)}</span>
+                <Badge tone={e.direction === "CREDIT" ? "up" : "down"}>{e.direction}</Badge>
+              </div>
+              <div className="mt-1 flex items-center gap-2 text-[11px]">
+                <span className="text-muted">{e.type === "COMMISSION" ? "BROKERAGE" : e.type}</span>
+                <span className="num truncate text-muted">{e.email}</span>
+              </div>
+              <div className="num mt-1 text-[11px] text-muted">
+                Bal {money.fmt(e.balanceAfter)} · {new Date(e.createdAt).toLocaleString()}
+              </div>
+              {e.memo ? <div className="mt-1 break-words text-xs text-muted">{e.memo}</div> : null}
+            </div>
+          ))}
+          {!isLoading && (data?.entries ?? []).length === 0 && (
+            <div className="px-3 py-8 text-center text-muted">No ledger entries.</div>
+          )}
+        </div>
       </Card>
     </div>
   );
@@ -756,7 +1046,7 @@ function LivePositionsTab() {
         <Stat label="Distinct traders" value={new Set(list.map((p) => p.userId)).size} />
       </div>
       <Card title="Live client positions">
-        <div className="overflow-x-auto">
+        <div className="hidden overflow-x-auto md:block">
           <table className="w-full text-left text-sm">
             <thead className="text-[11px] uppercase tracking-wider text-muted">
               <tr>
@@ -770,8 +1060,8 @@ function LivePositionsTab() {
             <tbody>
               {list.map((p) => (
                 <tr key={p.id} className="border-b border-line/60 hover:bg-slate/40">
-                  <td className="px-3 py-2 text-xs">{p.email}</td>
-                  <td className="num px-3 py-2 text-xs text-muted">{p.ip ?? "—"}</td>
+                  <td className="px-3 py-2 text-xs"><span className="block max-w-[170px] truncate" title={p.email}>{p.email}</span></td>
+                  <td className="num max-w-[130px] truncate px-3 py-2 text-xs text-muted" title={p.ip ?? ""}>{p.ip ?? "—"}</td>
                   <td className="num px-3 py-2 font-semibold">{p.symbol}</td>
                   <td className={cls("px-3 py-2", p.side === "BUY" ? "text-up" : "text-down")}>{p.side}</td>
                   <td className="num px-3 py-2">{p.qty}</td>
@@ -782,7 +1072,7 @@ function LivePositionsTab() {
                   <td className={cls("num px-3 py-2 font-semibold", p.unrealizedPnl >= 0 ? "text-up" : "text-down")}>{money.signed(p.unrealizedPnl)}</td>
                   <td className="num px-3 py-2">{fmtMarket(p.liquidationPrice, qc.get(p.symbol))}</td>
                   <td className="px-3 py-2">
-                    <button className="btn-ghost py-1 text-xs" onClick={() => forceClose.mutate(p.id)}>
+                    <button className="btn-ghost whitespace-nowrap px-2 py-0.5 text-[11px]" onClick={() => forceClose.mutate(p.id)}>
                       Force close
                     </button>
                   </td>
@@ -797,6 +1087,36 @@ function LivePositionsTab() {
               )}
             </tbody>
           </table>
+        </div>
+        <div className="divide-y divide-line/60 md:hidden">
+          {list.map((p) => (
+            <div key={p.id} className="px-3 py-3">
+              <div className="flex items-center justify-between gap-2">
+                <span className="num truncate text-sm font-semibold">{p.symbol}</span>
+                <span className={p.side === "BUY" ? "text-xs text-up" : "text-xs text-down"}>{p.side} · {p.qty} @ 1:{p.leverage}</span>
+              </div>
+              <div className="num mt-1 truncate text-[11px] text-muted">{p.email}</div>
+              <div className="mt-2 grid grid-cols-2 gap-2">
+                <div>
+                  <div className="text-[10px] uppercase tracking-wider text-muted">Entry → Mark</div>
+                  <div className="num text-sm">{fmtMarket(p.entry, qc.get(p.symbol))} → {fmtMarket(p.mark, qc.get(p.symbol))}</div>
+                </div>
+                <div>
+                  <div className="text-[10px] uppercase tracking-wider text-muted">Unrealized</div>
+                  <div className={cls("num text-sm font-semibold", p.unrealizedPnl >= 0 ? "text-up" : "text-down")}>{money.signed(p.unrealizedPnl)}</div>
+                  <div className="num text-[11px] text-muted">Margin {money.fmt(p.marginUsed)}</div>
+                </div>
+              </div>
+              <div className="mt-2">
+                <button className="btn-ghost whitespace-nowrap px-2 py-0.5 text-[11px]" onClick={() => forceClose.mutate(p.id)}>
+                  Force close
+                </button>
+              </div>
+            </div>
+          ))}
+          {list.length === 0 && (
+            <div className="px-3 py-8 text-center text-muted">No live positions</div>
+          )}
         </div>
       </Card>
     </div>
@@ -902,7 +1222,7 @@ function LeverageTab({ isSuper }: { isSuper: boolean }) {
       </Card>
 
       <Card title="Active leverage rules">
-        <table className="w-full text-left text-sm">
+        <table className="hidden w-full text-left text-sm md:table">
           <thead className="text-[11px] uppercase tracking-wider text-muted">
             <tr>
               {["Scope", "Target", "Max lev.", "Call %", "Stop-out %", "Tenant"].map((h) => (
@@ -920,11 +1240,27 @@ function LeverageTab({ isSuper }: { isSuper: boolean }) {
                 <td className="num px-3 py-2 text-accent">1:{r.maxLeverage}</td>
                 <td className="num px-3 py-2">{r.marginCallPct}%</td>
                 <td className="num px-3 py-2">{r.stopOutPct}%</td>
-                <td className="px-3 py-2 text-xs text-muted">{r.tenantId ?? "global"}</td>
+                <td className="px-3 py-2 text-xs text-muted" title={r.tenantId ?? ""}>{r.tenantId ? `…${r.tenantId.slice(-6)}` : "global"}</td>
               </tr>
             ))}
           </tbody>
         </table>
+        <div className="divide-y divide-line/60 md:hidden">
+          {(rules.data?.rules ?? []).map((r) => (
+            <div key={r.id} className="px-3 py-3">
+              <div className="flex items-center justify-between gap-2">
+                <span className="truncate text-sm font-semibold">{r.assetClass ?? r.assetId ?? r.scope}</span>
+                <span className="num shrink-0 text-sm text-accent">1:{r.maxLeverage}</span>
+              </div>
+              <div className="num mt-1 text-[11px] text-muted">
+                {r.scope} · Call {r.marginCallPct}% · Stop-out {r.stopOutPct}% · {r.tenantId ? `…${r.tenantId.slice(-6)}` : "global"}
+              </div>
+            </div>
+          ))}
+          {(rules.data?.rules ?? []).length === 0 && (
+            <div className="px-3 py-8 text-center text-muted">No rules.</div>
+          )}
+        </div>
       </Card>
     </div>
   );
@@ -942,7 +1278,7 @@ function TenantsTab() {
           <TextField label="Brand name" value={form.name} onChange={(v) => setForm({ ...form, name: v })} />
           <TextField label="Slug" value={form.slug} onChange={(v) => setForm({ ...form, slug: v })} placeholder="acmefx" />
           <TextField label="Domain" value={form.domain} onChange={(v) => setForm({ ...form, domain: v })} placeholder="trade.acmefx.com" />
-          <div className="grid grid-cols-3 gap-2">
+          <div className="grid gap-2 sm:grid-cols-3">
             <ColorField label="Primary" value={form.primaryColor} onChange={(v) => setForm({ ...form, primaryColor: v })} />
             <ColorField label="Accent" value={form.accentColor} onChange={(v) => setForm({ ...form, accentColor: v })} />
             <ColorField label="BG" value={form.background} onChange={(v) => setForm({ ...form, background: v })} />
@@ -954,16 +1290,17 @@ function TenantsTab() {
       </Card>
 
       <Card title="Tenants">
-        <table className="w-full text-left text-sm">
-          <thead className="text-[11px] uppercase tracking-wider text-muted">
-            <tr>
-              {["Brand", "Domain", "Users", "Open pos.", "Colors", "Status"].map((h) => (
-                <th key={h} className="border-b border-line px-3 py-2 font-medium">
-                  {h}
-                </th>
-              ))}
-            </tr>
-          </thead>
+        <div className="hidden overflow-x-auto md:block">
+          <table className="w-full text-left text-sm">
+            <thead className="text-[11px] uppercase tracking-wider text-muted">
+              <tr>
+                {["Brand", "Domain", "Users", "Open pos.", "Colors", "Status"].map((h) => (
+                  <th key={h} className="border-b border-line px-3 py-2 font-medium">
+                    {h}
+                  </th>
+                ))}
+              </tr>
+            </thead>
           <tbody>
             {(tenants.data?.tenants ?? []).map((t) => (
               <tr key={t.id} className="border-b border-line/60">
@@ -985,6 +1322,26 @@ function TenantsTab() {
             ))}
           </tbody>
         </table>
+        </div>
+        <div className="divide-y divide-line/60 md:hidden">
+          {(tenants.data?.tenants ?? []).map((t) => (
+            <div key={t.id} className="px-3 py-3">
+              <div className="flex items-center justify-between gap-2">
+                <span className="truncate text-sm font-semibold">{t.name}</span>
+                <Badge tone={t.status === "ACTIVE" ? "up" : "down"}>{t.status}</Badge>
+              </div>
+              <div className="num mt-1 truncate text-[11px] text-muted">{t.domain}</div>
+              <div className="mt-2 flex items-center justify-between gap-2">
+                <span className="num text-xs text-muted">{t.stats.users} users · {t.stats.openPositions} open</span>
+                <span className="flex gap-1">
+                  <span className="h-4 w-4" style={{ background: t.primaryColor }} />
+                  <span className="h-4 w-4" style={{ background: t.accentColor }} />
+                  <span className="h-4 w-4" style={{ background: t.background }} />
+                </span>
+              </div>
+            </div>
+          ))}
+        </div>
       </Card>
     </div>
   );
@@ -1049,6 +1406,7 @@ function LeverageModal({ target, onClose }: { target: { id: string; email: strin
 function FundsModal({ target, onClose }: { target: FundTarget; onClose: () => void }) {
   const adjust = useAdjustLedger();
   const money = useMoney();
+  const ownBalance = useAuthStore((s) => s.accounts[0]?.balance ?? 0);
   const [accountId, setAccountId] = useState(target.accounts[0]?.id ?? "");
   const [type, setType] = useState("DEPOSIT");
   const [amount, setAmount] = useState("1000");
@@ -1084,6 +1442,7 @@ function FundsModal({ target, onClose }: { target: FundTarget; onClose: () => vo
           </button>
         </div>
         <p className="mb-4 text-sm text-muted">{target.email}</p>
+        <p className="mb-4 text-xs text-muted">Moves out of your balance — available {money.fmt(ownBalance)}.</p>
         <div className="space-y-3">
           <label className="block">
             <span className="mb-1 block text-[11px] uppercase tracking-wider text-muted">Account</span>
@@ -1205,7 +1564,7 @@ function AuditTab() {
   const { data, isLoading } = useAdminAudit();
   return (
     <Card title="Audit log" action={<span className="text-xs text-muted">{data?.logs.length ?? 0}</span>}>
-      <div className="overflow-x-auto">
+      <div className="hidden overflow-x-auto md:block">
         <table className="w-full text-left text-sm">
           <thead className="text-[11px] uppercase tracking-wider text-muted">
             <tr>
@@ -1223,7 +1582,7 @@ function AuditTab() {
                 <td className="px-3 py-2 font-medium">{l.action}</td>
                 <td className="num px-3 py-2 text-xs">{l.actorId?.slice(-6) ?? "—"}</td>
                 <td className="px-3 py-2 text-xs">{l.targetType ? `${l.targetType}:${l.targetId?.slice(-6) ?? ""}` : "—"}</td>
-                <td className="num px-3 py-2 text-xs text-muted">{l.ip ?? "—"}</td>
+                <td className="num max-w-[130px] truncate px-3 py-2 text-xs text-muted" title={l.ip ?? ""}>{l.ip ?? "—"}</td>
               </tr>
             ))}
             {isLoading && (
@@ -1235,6 +1594,20 @@ function AuditTab() {
             )}
           </tbody>
         </table>
+      </div>
+      <div className="divide-y divide-line/60 md:hidden">
+        {(data?.logs ?? []).map((l) => (
+          <div key={l.id} className="px-3 py-3">
+            <div className="flex items-center justify-between gap-2">
+              <span className="truncate text-sm font-medium">{l.action}</span>
+              <span className="num shrink-0 text-[10px] text-muted">{new Date(l.createdAt).toLocaleString()}</span>
+            </div>
+            <div className="num mt-1 truncate text-[11px] text-muted">
+              {l.actorId?.slice(-6) ?? "—"} → {l.targetType ? `${l.targetType}:${l.targetId?.slice(-6) ?? ""}` : "—"} · {l.ip ?? "—"}
+            </div>
+          </div>
+        ))}
+        {isLoading && <div className="px-3 py-8 text-center text-muted">Loading…</div>}
       </div>
     </Card>
   );
@@ -1258,7 +1631,7 @@ function ClientDrawer({ userId, onClose }: { userId: string; onClose: () => void
               {data?.user.username} · {data?.user.email} · {data?.user.role} · {data?.user.status}
             </div>
           </div>
-          <button onClick={onClose} className="btn-ghost py-1 text-xs">
+          <button onClick={onClose} className="btn-ghost whitespace-nowrap px-2 py-0.5 text-[11px]">
             Close
           </button>
         </header>
@@ -1268,17 +1641,54 @@ function ClientDrawer({ userId, onClose }: { userId: string; onClose: () => void
             <>
               <div className="grid grid-cols-2 gap-3 md:grid-cols-3">
                 <Stat label="Balance" value={money.fmt(data.stats.balance)} />
-                <Stat label="Margin used" value={money.fmt(data.stats.marginUsed)} tone="amber" />
+                {(data.user.role === "TENANT_ADMIN" || data.user.role === "SUPER_ADMIN") ? null : (
+                  <Stat label="Margin used" value={money.fmt(data.stats.marginUsed)} tone="amber" />
+                )}
                 <Stat label="Deposits" value={money.fmt(data.stats.deposits)} />
-                <Stat label="Realized P&L" value={money.signed(data.stats.realizedPnl)} tone={data.stats.realizedPnl >= 0 ? "up" : "down"} />
-                <Stat label="Unrealized P&L" value={money.signed(data.stats.unrealizedPnl)} tone={data.stats.unrealizedPnl >= 0 ? "up" : "down"} />
-                <Stat label="Brokerage" value={money.fmt(data.stats.commission)} tone="amber" />
-                <Stat label="Net P&L" value={money.signed(data.stats.netPnl)} tone={data.stats.netPnl >= 0 ? "up" : "down"} />
-                <Stat label="Trades" value={`${data.stats.trades} (${data.stats.openTrades} open)`} />
-                <Stat
-                  label="Win rate"
-                  value={winRate === null || winRate === undefined ? "—" : `${Math.round(winRate * 100)}% · ${data.stats.wins}W/${data.stats.losses}L`}
-                />
+                {(data.user.role === "TENANT_ADMIN" || data.user.role === "SUPER_ADMIN") ? (
+                  <Stat label="Client brokerage" value={money.fmt(data.stats.clientStats?.commission ?? 0)} tone="amber" />
+                ) : (
+                  <Stat label="Brokerage" value={money.fmt(data.stats.commission)} tone="amber" />
+                )}
+                {(data.user.role === "TENANT_ADMIN" || data.user.role === "SUPER_ADMIN") && (
+                  <Stat label="Granted to clients" value={money.fmt(data.stats.grantedToClients ?? 0)} tone="amber" />
+                )}
+                {(() => {
+                  const isAdminRole = data.user.role === "TENANT_ADMIN" || data.user.role === "SUPER_ADMIN";
+                  const cs = isAdminRole ? data.stats.clientStats : null;
+                  const realized = cs?.realizedPnl ?? data.stats.realizedPnl;
+                  const unrealized = cs?.unrealizedPnl ?? data.stats.unrealizedPnl;
+                  const net = cs?.netPnl ?? data.stats.netPnl;
+                  const trades = cs?.trades ?? data.stats.trades;
+                  const openTrades = cs?.openTrades ?? data.stats.openTrades;
+                  const wr = cs ? cs.winRate : winRate;
+                  const w = cs ? cs.wins : data.stats.wins;
+                  const l = cs ? cs.losses : data.stats.losses;
+                  return (
+                    <>
+                      <Stat label="Realized P&L" value={money.signed(realized)} tone={realized >= 0 ? "up" : "down"} />
+                      <Stat label="Unrealized P&L" value={money.signed(unrealized)} tone={unrealized >= 0 ? "up" : "down"} />
+                      <Stat label="Net P&L" value={money.signed(net)} tone={net >= 0 ? "up" : "down"} />
+                      <Stat label="Trades" value={`${trades} (${openTrades} open)`} />
+                      {(() => {
+                        if (!isAdminRole) {
+                          return (
+                            <Stat
+                              label="Win rate"
+                              value={wr === null || wr === undefined ? "—" : `${Math.round(wr * 100)}% · ${w}W/${l}L`}
+                            />
+                          );
+                        }
+                        // Client current net balance: what the admin granted,
+                        // plus/minus what those clients made or lost since.
+                        const clientNet = (data.stats.grantedToClients ?? 0) + net;
+                        return (
+                          <Stat label="Client net balance" value={money.signed(clientNet)} tone={clientNet >= 0 ? "up" : "down"} />
+                        );
+                      })()}
+                    </>
+                  );
+                })()}
               </div>
 
               <Card title="Leverage by segment">
@@ -1296,9 +1706,10 @@ function ClientDrawer({ userId, onClose }: { userId: string; onClose: () => void
               </Card>
 
               <Card title={`Open positions (${data.openPositions.length})`}>
-                <MiniTable head={["Symbol", "Side", "Qty", "Entry", "Mark", "Margin", "Unrealized"]}>
+                <MiniTable head={["Client", "Symbol", "Side", "Qty", "Entry", "Mark", "Margin", "Unrealized"]}>
                   {data.openPositions.map((p) => (
                     <tr key={p.id} className="border-b border-line/60">
+                      <td className="max-w-[150px] truncate px-3 py-2 text-xs text-muted" title={p.email}>{p.email}</td>
                       <td className="num px-3 py-2 font-semibold">{p.symbol}</td>
                       <td className={cls("px-3 py-2", p.side === "BUY" ? "text-up" : "text-down")}>{p.side}</td>
                       <td className="num px-3 py-2">{p.qty}</td>
@@ -1316,6 +1727,31 @@ function ClientDrawer({ userId, onClose }: { userId: string; onClose: () => void
                     </tr>
                   )}
                 </MiniTable>
+                <div className="divide-y divide-line/60 md:hidden">
+                  {data.openPositions.map((p) => (
+                    <div key={p.id} className="px-3 py-3">
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="num truncate text-sm font-semibold">{p.symbol}</span>
+                        <span className={p.side === "BUY" ? "text-xs text-up" : "text-xs text-down"}>{p.side} · {p.qty}</span>
+                      </div>
+                      <div className="num mt-1 truncate text-[11px] text-muted">{p.email}</div>
+                      <div className="mt-2 grid grid-cols-2 gap-2">
+                        <div>
+                          <div className="text-[10px] uppercase tracking-wider text-muted">Entry → Mark</div>
+                          <div className="num text-sm">{fmtMarket(p.entry, qc.get(p.symbol))} → {fmtMarket(p.mark, qc.get(p.symbol))}</div>
+                        </div>
+                        <div>
+                          <div className="text-[10px] uppercase tracking-wider text-muted">Unrealized</div>
+                          <div className={cls("num text-sm font-semibold", p.unrealizedPnl >= 0 ? "text-up" : "text-down")}>{money.signed(p.unrealizedPnl)}</div>
+                          <div className="num text-[11px] text-muted">Margin {money.fmt(p.marginUsed)}</div>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                  {data.openPositions.length === 0 && (
+                    <div className="py-6 text-center text-sm text-muted">No open positions</div>
+                  )}
+                </div>
               </Card>
 
               <Card
@@ -1342,7 +1778,7 @@ function ClientDrawer({ userId, onClose }: { userId: string; onClose: () => void
                       ))}
                     </div>
                     <button
-                      className="btn-ghost py-1 text-xs"
+                      className="btn-ghost whitespace-nowrap px-2 py-0.5 text-[11px]"
                       onClick={() =>
                         void downloadCsv(
                           `/admin/trades.csv?userId=${userId}&status=${tradeStatus}`,
@@ -1355,12 +1791,13 @@ function ClientDrawer({ userId, onClose }: { userId: string; onClose: () => void
                   </div>
                 }
               >
-                <MiniTable head={["Opened", "Symbol", "Side", "Qty", "Lev", "Entry", "Exit / Mark", "Margin", "P&L", "Status"]}>
+                <MiniTable head={["Opened", "Client", "Symbol", "Side", "Qty", "Lev", "Entry", "Exit / Mark", "Margin", "P&L", "Status"]}>
                   {data.trades.map((t) => {
                     const pnl = t.status === "OPEN" ? t.unrealizedPnl : t.realizedPnl;
                     return (
                       <tr key={t.id} className="border-b border-line/60">
                         <td className="num px-3 py-2 text-xs text-muted">{new Date(t.openedAt).toLocaleString()}</td>
+                        <td className="max-w-[150px] truncate px-3 py-2 text-xs text-muted" title={t.email}>{t.email}</td>
                         <td className="num px-3 py-2 font-semibold">{t.symbol}</td>
                         <td className={cls("px-3 py-2", t.side === "BUY" ? "text-up" : "text-down")}>{t.side}</td>
                         <td className="num px-3 py-2">{t.qty}</td>
@@ -1383,15 +1820,49 @@ function ClientDrawer({ userId, onClose }: { userId: string; onClose: () => void
                     </tr>
                   )}
                 </MiniTable>
+                <div className="divide-y divide-line/60 md:hidden">
+                  {data.trades.map((t) => {
+                    const pnl = t.status === "OPEN" ? t.unrealizedPnl : t.realizedPnl;
+                    return (
+                      <div key={t.id} className="px-3 py-3">
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="num truncate text-sm font-semibold">{t.symbol}</span>
+                          <Badge tone={t.status === "OPEN" ? "amber" : t.status === "LIQUIDATED" ? "down" : "neutral"}>{t.status}</Badge>
+                        </div>
+                        <div className="num mt-1 truncate text-[11px] text-muted">{t.email}</div>
+                        <div className="mt-1 flex items-center gap-2 text-[11px]">
+                          <span className={t.side === "BUY" ? "text-up" : "text-down"}>{t.side}</span>
+                          <span className="num text-muted">{t.qty} @ 1:{t.leverage}</span>
+                          <span className="num text-muted">{new Date(t.openedAt).toLocaleString()}</span>
+                        </div>
+                        <div className="num mt-1 truncate text-[11px] text-muted">{t.email}</div>
+                        <div className="mt-2 grid grid-cols-2 gap-2">
+                          <div>
+                            <div className="text-[10px] uppercase tracking-wider text-muted">Entry → Exit</div>
+                            <div className="num text-sm">{fmtMarket(t.entry, qc.get(t.symbol))} → {fmtMarket(t.exit ?? t.mark, qc.get(t.symbol))}</div>
+                          </div>
+                          <div>
+                            <div className="text-[10px] uppercase tracking-wider text-muted">P&amp;L</div>
+                            <div className={cls("num text-sm font-semibold", pnl >= 0 ? "text-up" : "text-down")}>{money.signed(pnl)}</div>
+                            <div className="num text-[11px] text-muted">Margin {money.fmt(t.marginUsed)}</div>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                  {data.trades.length === 0 && (
+                    <div className="py-6 text-center text-sm text-muted">No trades</div>
+                  )}
+                </div>
                 {data.trades.length < data.tradesTotal && (
                   <div className="flex flex-wrap items-center justify-center gap-2 pt-2">
                     {tradeTake < 5000 && (
-                      <button className="btn-ghost py-1 text-xs" onClick={() => setTradeTake((n) => Math.min(n + 100, 5000))}>
+                      <button className="btn-ghost whitespace-nowrap px-2 py-0.5 text-[11px]" onClick={() => setTradeTake((n) => Math.min(n + 100, 5000))}>
                         Load more
                       </button>
                     )}
                     {data.tradesTotal <= 5000 && (
-                      <button className="btn-ghost py-1 text-xs" onClick={() => setTradeTake(data.tradesTotal)}>
+                      <button className="btn-ghost whitespace-nowrap px-2 py-0.5 text-[11px]" onClick={() => setTradeTake(data.tradesTotal)}>
                         Load all
                       </button>
                     )}
@@ -1408,10 +1879,11 @@ function ClientDrawer({ userId, onClose }: { userId: string; onClose: () => void
                   <span className="text-[11px] text-muted">Entries & limit orders; closes are in trade history</span>
                 }
               >
-                <MiniTable head={["Time", "Symbol", "Side", "Type", "Qty", "Price", "Filled", "Lev", "Status", "Position"]}>
+                <MiniTable head={["Time", "Client", "Symbol", "Side", "Type", "Qty", "Price", "Filled", "Lev", "Status", "Position"]}>
                   {data.orders.map((o) => (
                     <tr key={o.id} className="border-b border-line/60">
                       <td className="num px-3 py-2 text-xs text-muted">{new Date(o.createdAt).toLocaleString()}</td>
+                      <td className="max-w-[150px] truncate px-3 py-2 text-xs text-muted" title={o.email}>{o.email}</td>
                       <td className="num px-3 py-2 font-semibold">{o.symbol}</td>
                       <td className={cls("px-3 py-2", o.side === "BUY" ? "text-up" : "text-down")}>{o.side}</td>
                       <td className="px-3 py-2 text-xs">{o.type}</td>
@@ -1447,15 +1919,50 @@ function ClientDrawer({ userId, onClose }: { userId: string; onClose: () => void
                     </tr>
                   )}
                 </MiniTable>
+                <div className="divide-y divide-line/60 md:hidden">
+                  {data.orders.map((o) => (
+                    <div key={o.id} className="px-3 py-3">
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="num truncate text-sm font-semibold">{o.symbol}</span>
+                        <Badge
+                          tone={
+                            o.status === "FILLED"
+                              ? "up"
+                              : o.status === "REJECTED"
+                                ? "down"
+                                : o.status === "PENDING" || o.status === "PARTIAL"
+                                  ? "amber"
+                                  : "neutral"
+                          }
+                        >
+                          {o.status}
+                        </Badge>
+                      </div>
+                      <div className="mt-1 flex items-center gap-2 text-[11px]">
+                        <span className={o.side === "BUY" ? "text-up" : "text-down"}>{o.side}</span>
+                        <span className="num text-muted">{o.type} · {o.qty} @ 1:{o.leverage}</span>
+                        <span className="num text-muted">{new Date(o.createdAt).toLocaleString()}</span>
+                      </div>
+                      <div className="num mt-1 truncate text-[11px] text-muted">{o.email}</div>
+                      <div className="num mt-1 text-sm">{fmtMarket(o.price ?? o.filledPrice, qc.get(o.symbol))}</div>
+                      <div className="num text-[11px] text-muted">
+                        {o.filledQty > 0 ? `filled ${o.filledQty} @ ${fmtMarket(o.filledPrice, qc.get(o.symbol))}` : "unfilled"}
+                      </div>
+                    </div>
+                  ))}
+                  {data.orders.length === 0 && (
+                    <div className="py-6 text-center text-sm text-muted">No orders</div>
+                  )}
+                </div>
                 {data.orders.length < data.ordersTotal && (
                   <div className="flex flex-wrap items-center justify-center gap-2 pt-2">
                     {orderTake < 5000 && (
-                      <button className="btn-ghost py-1 text-xs" onClick={() => setOrderTake((n) => Math.min(n + 100, 5000))}>
+                      <button className="btn-ghost whitespace-nowrap px-2 py-0.5 text-[11px]" onClick={() => setOrderTake((n) => Math.min(n + 100, 5000))}>
                         Load more
                       </button>
                     )}
                     {data.ordersTotal <= 5000 && (
-                      <button className="btn-ghost py-1 text-xs" onClick={() => setOrderTake(data.ordersTotal)}>
+                      <button className="btn-ghost whitespace-nowrap px-2 py-0.5 text-[11px]" onClick={() => setOrderTake(data.ordersTotal)}>
                         Load all
                       </button>
                     )}
@@ -1488,6 +1995,24 @@ function ClientDrawer({ userId, onClose }: { userId: string; onClose: () => void
                     </tr>
                   )}
                 </MiniTable>
+                <div className="divide-y divide-line/60 md:hidden">
+                  {data.ledger.map((e) => (
+                    <div key={e.id} className="px-3 py-3">
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="num text-sm font-semibold">{money.fmt(e.amount)}</span>
+                        <Badge tone={e.direction === "CREDIT" ? "up" : "down"}>{e.direction}</Badge>
+                      </div>
+                      <div className="mt-1 text-[11px] text-muted">{e.type === "COMMISSION" ? "BROKERAGE" : e.type}</div>
+                      <div className="num mt-1 text-[11px] text-muted">
+                        Bal {money.fmt(e.balanceAfter)} · {new Date(e.createdAt).toLocaleString()}
+                      </div>
+                      {e.memo ? <div className="mt-1 break-words text-xs text-muted">{e.memo}</div> : null}
+                    </div>
+                  ))}
+                  {data.ledger.length === 0 && (
+                    <div className="py-6 text-center text-sm text-muted">No entries</div>
+                  )}
+                </div>
               </Card>
             </>
           )}
@@ -1499,7 +2024,7 @@ function ClientDrawer({ userId, onClose }: { userId: string; onClose: () => void
 
 function MiniTable({ head, children }: { head: string[]; children: React.ReactNode }) {
   return (
-    <div className="overflow-x-auto">
+    <div className="hidden overflow-x-auto md:block">
       <table className="w-full text-left text-sm">
         <thead className="text-[11px] uppercase tracking-wider text-muted">
           <tr>

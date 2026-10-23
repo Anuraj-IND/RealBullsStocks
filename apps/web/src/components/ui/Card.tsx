@@ -15,14 +15,22 @@ export function Card({ children, className, title, action }: { children: ReactNo
   );
 }
 
-export function Stat({ label, value, tone = "default" }: { label: string; value: ReactNode; tone?: "default" | "up" | "down" | "amber" }) {
+export function Stat({ label, value, tone = "default", onClick }: { label: string; value: ReactNode; tone?: "default" | "up" | "down" | "amber"; onClick?: () => void }) {
   const toneClass =
     tone === "up" ? "text-lime" : tone === "down" ? "text-brandbright" : tone === "amber" ? "text-amber" : "text-ink";
-  return (
-    <div className="panel-tight px-3 py-2">
+  const body = (
+    <>
       <div className="text-[11px] uppercase tracking-wider text-muted">{label}</div>
       <div className={clsx("num mt-0.5 text-base font-semibold", toneClass)}>{value}</div>
-    </div>
+    </>
+  );
+  if (!onClick) {
+    return <div className="panel-tight px-3 py-2">{body}</div>;
+  }
+  return (
+    <button className="panel-tight w-full cursor-pointer px-3 py-2 text-left hover:bg-slate/40" onClick={onClick} title="View breakdown">
+      {body}
+    </button>
   );
 }
 

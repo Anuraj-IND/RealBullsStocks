@@ -1,6 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
-import type { Prisma } from "@realbulls/db";
+import { Prisma } from "@realbulls/db";
 import {
   adminAdjustSchema,
   leverageUpdateSchema,
@@ -10,12 +10,12 @@ import {
 } from "@realbulls/shared";
 import { prisma } from "../lib/prisma.js";
 import { authenticate, requireRole } from "../plugins/auth.js";
-import { forbidden, notFound, badRequest } from "../lib/errors.js";
+import { forbidden, notFound, badRequest, unprocessable } from "../lib/errors.js";
 import { hashPassword } from "../lib/password.js";
 import { slugBase, uniqueUsername } from "../lib/usernames.js";
-import { postLedgerChanges } from "../services/ledger.service.js";
+import { postLedgerChanges, postLedgerChangesWithin } from "../services/ledger.service.js";
 import { getQuote } from "../services/market.service.js";
-import { closePosition } from "../services/order.service.js";
+import { closePosition, inr } from "../services/order.service.js";
 import { D } from "../lib/money.js";
 import { filledQtyByPosition } from "../lib/positions.js";
 import {
@@ -91,11 +91,20 @@ export default async function adminRoutes(app: FastifyInstance) {
    */
   async function loadManageableAccount(request: { auth?: AdminScope }, id: string) {
     const auth = scopeOf(request);
-    const acct = await prisma.account.findUnique({ where: { id }, include: { user: { select: { id: true, createdById: true, tenantId: true } } } });
+    const acct = await prisma.account.findUnique({ where: { id }, include: { user: { select: { id: true, createdById: true, tenantId: true, email: true } } } });
     if (!acct || acct.isHouse) throw notFound("Account not found");
     tenantScope(request, acct.tenantId);
     assertManagesUser(auth, acct.user);
     return acct;
+  }
+
+  // Hierarchical funding: money moves, never materializes. Returns the
+  // actor's own primary trading account that funds every grant.
+  async function fundingAccount(userId: string) {
+    return prisma.account.findFirst({
+      where: { userId, isHouse: false },
+      orderBy: [{ isPrimary: "desc" }, { createdAt: "asc" }],
+    });
   }
 
   
@@ -312,6 +321,20 @@ export default async function adminRoutes(app: FastifyInstance) {
     const password = body.password ?? `rb-${Math.random().toString(36).slice(2, 10)}`;
     const passwordHash = await hashPassword(password);
 
+    // Starting balance is funded by the creator, same invariant as ledger
+    // adjust — check before creating anything so we fail fast when broke.
+    const startingBalance = body.startingBalance ?? 0;
+    const funds = startingBalance > 0 ? await fundingAccount(auth.sub) : null;
+    if (startingBalance > 0) {
+      if (!funds) throw notFound("No trading account for user");
+      if (D.num(funds.balance) < startingBalance) {
+        throw unprocessable(
+          `Insufficient funds: starting balance ${inr(startingBalance)} exceeds your ${inr(D.num(funds.balance))}`,
+          "INSUFFICIENT_FUNDS",
+        );
+      }
+    }
+
     const user = await prisma.user.create({
       data: {
         tenantId,
@@ -330,8 +353,21 @@ export default async function adminRoutes(app: FastifyInstance) {
     const account = await prisma.account.create({
       data: { userId: user.id, tenantId, type: "DEMO", baseCurrency: "INR", balance: 0, isPrimary: true },
     });
-    if ((body.startingBalance ?? 0) > 0) {
-      await postLedgerChanges(account.id, [{ type: "DEPOSIT", delta: body.startingBalance!, memo: "Initial balance (admin)" }], { createdBy: auth.sub });
+    if (startingBalance > 0) {
+      await prisma.$transaction(async (tx) => {
+        await postLedgerChangesWithin(
+          tx,
+          funds!.id,
+          [{ type: "DEPOSIT", delta: -startingBalance, memo: `Starting balance for ${email}` }],
+          { createdBy: auth.sub },
+        );
+        await postLedgerChangesWithin(
+          tx,
+          account.id,
+          [{ type: "DEPOSIT", delta: startingBalance, memo: "Initial balance (admin)" }],
+          { createdBy: auth.sub },
+        );
+      }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
     }
     await prisma.watchlist.create({ data: { userId: user.id, name: "Default" } });
     await prisma.auditLog.create({
@@ -528,6 +564,17 @@ export default async function adminRoutes(app: FastifyInstance) {
     assertManagesUser(scopeOf(request), user);
 
     const accountIds = user.accounts.map((a) => a.id);
+    // Admin drawers show their clients' book too: open positions, trade and
+    // order history span the admin's own accounts plus every created user's.
+    // Personal totals/stats below stay personal; clientStats covers clients.
+    let scopeAccountIds = accountIds;
+    if (user.role === "TENANT_ADMIN" || user.role === "SUPER_ADMIN") {
+      const createdAccts = await prisma.account.findMany({
+        where: { user: { createdById: id }, isHouse: false },
+        select: { id: true },
+      });
+      scopeAccountIds = [...accountIds, ...createdAccts.map((a) => a.id)];
+    }
     const statuses =
       query.tradeStatus === "OPEN"
         ? ["OPEN"]
@@ -542,7 +589,7 @@ export default async function adminRoutes(app: FastifyInstance) {
     };
     const tradeTake = takeOf(query.tradeTake);
     const orderTake = takeOf(query.orderTake);
-    const tradeWhere = { accountId: { in: accountIds }, status: { in: statuses as never } };
+    const tradeWhere = { accountId: { in: scopeAccountIds }, status: { in: statuses as never } };
 
     const [
       openPositions,
@@ -558,11 +605,11 @@ export default async function adminRoutes(app: FastifyInstance) {
       losses,
       overrides,
     ] = await Promise.all([
-      prisma.position.findMany({ where: { accountId: { in: accountIds }, status: "OPEN" }, include: { asset: true }, orderBy: { openedAt: "desc" } }),
-      prisma.position.findMany({ where: tradeWhere, include: { asset: true }, orderBy: { openedAt: "desc" }, take: tradeTake }),
+      prisma.position.findMany({ where: { accountId: { in: scopeAccountIds }, status: "OPEN" }, include: { asset: true, account: { select: { user: { select: { email: true, username: true } } } } }, orderBy: { openedAt: "desc" } }),
+      prisma.position.findMany({ where: tradeWhere, include: { asset: true, account: { select: { user: { select: { email: true, username: true } } } } }, orderBy: { openedAt: "desc" }, take: tradeTake }),
       prisma.position.count({ where: tradeWhere }),
-      prisma.order.findMany({ where: { accountId: { in: accountIds } }, include: { asset: true }, orderBy: { createdAt: "desc" }, take: orderTake }),
-      prisma.order.count({ where: { accountId: { in: accountIds } } }),
+      prisma.order.findMany({ where: { accountId: { in: scopeAccountIds } }, include: { asset: true, account: { select: { user: { select: { email: true, username: true } } } } }, orderBy: { createdAt: "desc" }, take: orderTake }),
+      prisma.order.count({ where: { accountId: { in: scopeAccountIds } } }),
       prisma.ledgerEntry.findMany({ where: { accountId: { in: accountIds }, account: { isHouse: false } }, orderBy: { createdAt: "desc" }, take: 25 }),
       prisma.ledgerEntry.aggregate({ where: { accountId: { in: accountIds }, type: "DEPOSIT", direction: "CREDIT" }, _sum: { amount: true } }),
       prisma.ledgerEntry.aggregate({ where: { accountId: { in: accountIds }, type: "COMMISSION", direction: "DEBIT" }, _sum: { amount: true } }),
@@ -589,6 +636,7 @@ export default async function adminRoutes(app: FastifyInstance) {
       const q = await getQuote(p.asset.symbol);
       open.push({
         id: p.id,
+        email: p.account.user.username ?? p.account.user.email,
         symbol: p.asset.symbol,
         side: p.side,
         qty: D.num(p.qty),
@@ -613,6 +661,79 @@ export default async function adminRoutes(app: FastifyInstance) {
     const commission = D.num(commissionAgg._sum.amount);
     const balance = user.accounts.reduce((a, c) => a + D.num(c.balance), 0);
     const marginUsed = user.accounts.reduce((a, c) => a + D.num(c.marginUsed), 0);
+
+    // Net granted to users this admin created (admin roles only): signed
+    // DEPOSIT/WITHDRAWAL flow on their accounts. Null for plain traders.
+    // clientStats: net trading state across those same created users, so an
+    // admin drawer shows what their book is doing instead of personal zeros.
+    let grantedToClients: number | null = null;
+    let clientStats: {
+      realizedPnl: number;
+      unrealizedPnl: number;
+      netPnl: number;
+      commission: number;
+      trades: number;
+      openTrades: number;
+      wins: number;
+      losses: number;
+      winRate: number | null;
+    } | null = null;
+    if (user.role === "TENANT_ADMIN" || user.role === "SUPER_ADMIN") {
+      const createdIds = (
+        await prisma.user.findMany({ where: { createdById: id }, select: { id: true } })
+      ).map((r) => r.id);
+      if (createdIds.length > 0) {
+        const rows = await prisma.ledgerEntry.findMany({
+          where: {
+            account: { userId: { in: createdIds }, isHouse: false },
+            type: { in: ["DEPOSIT", "WITHDRAWAL"] },
+          },
+          select: { direction: true, amount: true },
+        });
+        grantedToClients = D.toMoney(
+          rows.reduce((s, r) => s + (r.direction === "CREDIT" ? D.num(r.amount) : -D.num(r.amount)), 0),
+        );
+        const clientAccounts = await prisma.account.findMany({
+          where: { userId: { in: createdIds }, isHouse: false },
+          select: { id: true },
+        });
+        const cIds = clientAccounts.map((a) => a.id);
+        const [cStats, cWins, cLosses, cCommAgg] = await Promise.all([
+          prisma.position.groupBy({
+            by: ["status"],
+            where: { accountId: { in: cIds } },
+            _sum: { realizedPnl: true, unrealizedPnl: true },
+            _count: { _all: true },
+          }),
+          prisma.position.count({ where: { accountId: { in: cIds }, status: { in: ["CLOSED", "LIQUIDATED"] }, realizedPnl: { gt: 0 } } }),
+          prisma.position.count({ where: { accountId: { in: cIds }, status: { in: ["CLOSED", "LIQUIDATED"] }, realizedPnl: { lt: 0 } } }),
+          prisma.ledgerEntry.aggregate({ where: { accountId: { in: cIds }, type: "COMMISSION", direction: "DEBIT" }, _sum: { amount: true } }),
+        ]);
+        const ct = { realized: 0, unrealized: 0, trades: 0, openTrades: 0 };
+        for (const row of cStats) {
+          ct.realized += D.num(row._sum.realizedPnl);
+          ct.trades += row._count._all;
+          if (row.status === "OPEN") {
+            ct.unrealized += D.num(row._sum.unrealizedPnl);
+            ct.openTrades += row._count._all;
+          }
+        }
+        const cComm = D.num(cCommAgg._sum.amount);
+        clientStats = {
+          realizedPnl: D.toMoney(ct.realized),
+          unrealizedPnl: D.toMoney(ct.unrealized),
+          netPnl: D.toMoney(ct.realized + ct.unrealized - cComm),
+          commission: D.toMoney(cComm),
+          trades: ct.trades,
+          openTrades: ct.openTrades,
+          wins: cWins,
+          losses: cLosses,
+          winRate: cWins + cLosses > 0 ? cWins / (cWins + cLosses) : null,
+        };
+      } else {
+        grantedToClients = 0;
+      }
+    }
 
     return {
       user: {
@@ -640,11 +761,14 @@ export default async function adminRoutes(app: FastifyInstance) {
         wins,
         losses,
         winRate: wins + losses > 0 ? wins / (wins + losses) : null,
+        grantedToClients,
+        clientStats,
       },
       openPositions: open,
       tradesTotal,
       trades: trades.map((p) => ({
         id: p.id,
+        email: p.account.user.username ?? p.account.user.email,
         symbol: p.asset.symbol,
         assetClass: p.asset.assetClass,
         side: p.side,
@@ -664,6 +788,7 @@ export default async function adminRoutes(app: FastifyInstance) {
       ordersTotal,
       orders: orders.map((o) => ({
         id: o.id,
+        email: o.account.user.username ?? o.account.user.email,
         symbol: o.asset.symbol,
         assetClass: o.asset.assetClass,
         side: o.side,
@@ -695,6 +820,18 @@ export default async function adminRoutes(app: FastifyInstance) {
     const auth = scopeOf(request);
     const tenantId = tenantScope(request, query.tenantId);
     const ownedAccountIds = isSuperAdmin(auth) ? null : await visibleAccountIds(auth);
+    // An admin's export covers their clients too (intersected with the
+    // caller's visible accounts below, so nothing leaks across managers).
+    let exportUserIds: string[] | undefined;
+    if (query.userId) {
+      const target = await prisma.user.findUnique({ where: { id: query.userId }, select: { role: true } });
+      if (target && (target.role === "TENANT_ADMIN" || target.role === "SUPER_ADMIN")) {
+        const created = await prisma.user.findMany({ where: { createdById: query.userId }, select: { id: true } });
+        exportUserIds = [query.userId, ...created.map((c) => c.id)];
+      } else {
+        exportUserIds = [query.userId];
+      }
+    }
     const statuses =
       query.status === "OPEN"
         ? ["OPEN"]
@@ -707,7 +844,7 @@ export default async function adminRoutes(app: FastifyInstance) {
       where: {
         ...(tenantId ? { tenantId } : {}),
         ...(ownedAccountIds ? { accountId: { in: ownedAccountIds } } : {}),
-        ...(query.userId ? { account: { userId: query.userId } } : {}),
+        ...(exportUserIds ? { account: { userId: { in: exportUserIds } } } : {}),
         status: { in: statuses as never },
       },
       include: { asset: true, account: { include: { user: true } } },
@@ -781,15 +918,19 @@ export default async function adminRoutes(app: FastifyInstance) {
     const ownedAccountIds = superScope ? null : await visibleAccountIds(auth);
     const userScope = superScope ? {} : { id: { in: ownedUserIds ?? [] } };
     const accountScope = superScope ? {} : { id: { in: ownedAccountIds ?? [] } };
+    // Position/ledger rows key the account as `accountId`, not `id` — a
+    // shared `accountScope` here silently matches nothing (tenant cards for
+    // realized/commission/open-positions all read 0).
+    const txScope = superScope ? {} : { accountId: { in: ownedAccountIds ?? [] } };
 
     const [users, admins, accounts, openPositions, closedAgg, commissionAgg, depositAgg, balanceAgg] = await Promise.all([
       prisma.user.count({ where: andWhere(scope, userScope, { email: { not: { endsWith: ".internal" } } }) as Prisma.UserWhereInput }),
       prisma.user.count({ where: andWhere(scope, userScope, { role: { in: ["SUPER_ADMIN", "TENANT_ADMIN"] } }) as Prisma.UserWhereInput }),
       prisma.account.count({ where: { ...scope, ...accountScope, isHouse: false } }),
-      prisma.position.count({ where: { ...scope, ...accountScope, status: "OPEN" } }),
-      prisma.position.aggregate({ where: { ...scope, ...accountScope, status: { in: ["CLOSED", "LIQUIDATED"] } }, _sum: { realizedPnl: true } }),
-      prisma.ledgerEntry.aggregate({ where: { ...scope, ...accountScope, type: "COMMISSION", direction: "DEBIT" }, _sum: { amount: true } }),
-      prisma.ledgerEntry.aggregate({ where: { ...scope, ...accountScope, type: "DEPOSIT", direction: "CREDIT" }, _sum: { amount: true } }),
+      prisma.position.count({ where: { ...scope, ...txScope, status: "OPEN" } }),
+      prisma.position.aggregate({ where: { ...scope, ...txScope, status: { in: ["CLOSED", "LIQUIDATED"] } }, _sum: { realizedPnl: true } }),
+      prisma.ledgerEntry.aggregate({ where: { ...scope, ...txScope, type: "COMMISSION", direction: "DEBIT" }, _sum: { amount: true } }),
+      prisma.ledgerEntry.aggregate({ where: { ...scope, ...txScope, type: "DEPOSIT", direction: "CREDIT" }, _sum: { amount: true } }),
       prisma.account.aggregate({ where: { ...scope, ...accountScope, isHouse: false }, _sum: { marginUsed: true, balance: true } }),
     ]);
 
@@ -881,9 +1022,43 @@ export default async function adminRoutes(app: FastifyInstance) {
       body.type === "DEPOSIT" ? Math.abs(body.amount) : body.type === "WITHDRAWAL" ? -Math.abs(body.amount) : body.amount;
     if (delta === 0) throw badRequest("Amount must be non-zero");
 
-    const result = await postLedgerChanges(account.id, [{ type: body.type, delta, memo: body.memo ?? `Admin ${body.type.toLowerCase()}` }], { createdBy: auth.sub });
+    // Hierarchical funding: every grant moves money out of the actor's own
+    // account in the same transaction — tenant admins can only hand out what
+    // they hold, and super-admin transfers deduct too. The only from-air path
+    // is a super admin topping up their OWN account (human-manual).
+    const funds = await fundingAccount(auth.sub);
+    if (!funds || funds.id === account.id) {
+      if (auth.role !== "SUPER_ADMIN") throw forbidden("Only a super admin can top up their own account");
+      if (!funds) throw notFound("No trading account for user");
+      const result = await postLedgerChanges(account.id, [{ type: body.type, delta, memo: body.memo ?? `Admin ${body.type.toLowerCase()}` }], { createdBy: auth.sub });
+      await prisma.auditLog.create({
+        data: { tenantId: account.tenantId, actorId: auth.sub, action: "LEDGER_ADJUST", targetType: "Account", targetId: account.id, after: { type: body.type, amount: body.amount }, ip: request.ip },
+      });
+      return result;
+    }
+
+    if (delta > 0 && D.num(funds.balance) < delta) {
+      throw unprocessable(
+        `Insufficient funds: ${account.user.email} needs ${inr(delta)}, you hold ${inr(D.num(funds.balance))}`,
+        "INSUFFICIENT_FUNDS",
+      );
+    }
+    const result = await prisma.$transaction(async (tx) => {
+      await postLedgerChangesWithin(
+        tx,
+        funds.id,
+        [{ type: body.type, delta: -delta, memo: `Transfer to ${account.user.email}` }],
+        { createdBy: auth.sub },
+      );
+      return postLedgerChangesWithin(
+        tx,
+        account.id,
+        [{ type: body.type, delta, memo: body.memo ?? `Admin ${body.type.toLowerCase()}` }],
+        { createdBy: auth.sub },
+      );
+    }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
     await prisma.auditLog.create({
-      data: { tenantId: account.tenantId, actorId: auth.sub, action: "LEDGER_ADJUST", targetType: "Account", targetId: account.id, after: { type: body.type, amount: body.amount }, ip: request.ip },
+      data: { tenantId: account.tenantId, actorId: auth.sub, action: "LEDGER_ADJUST", targetType: "Account", targetId: account.id, after: { type: body.type, amount: body.amount, fromAccount: funds.id }, ip: request.ip },
     });
     return result;
   });

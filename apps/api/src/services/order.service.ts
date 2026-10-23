@@ -44,7 +44,7 @@ function inrForAsset(price: number, asset: Pick<Asset, "quoteCurrency">): number
 }
 
 // User-facing rupee rendering for error strings (ledger stays USD).
-function inr(amountInr: number): string {
+export function inr(amountInr: number): string {
   return `₹${(amountInr).toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 }
 

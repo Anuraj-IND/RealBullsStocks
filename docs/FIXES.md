@@ -1,7 +1,105 @@
-# Fix Log — Chart, Market Data, Auth & UI
+## 2026-10-23 - Admin drawers show clients' positions/trades/orders
 
-Living document of significant fixes made to the local Realbulls stack.
-Newest session first.
+- ClientDrawer lists (open positions, trade + order history) were personal
+  only — empty for admins. Now scoped to own + created users' accounts with
+  a per-row owner email (tables, mobile cards, CSV export honors the same
+  scope via the existing safe intersection).
+- Verified live: ra drawer serves 3 trades + 3 orders attributed to rb2137.
+
+## 2026-10-23 - Admin drawers: client brokerage box, margin box removed
+
+- Admin-role drawers drop Margin used (personal, always 0) and gain Client
+  brokerage (commission across created users' accounts, same read path as
+  clientStats). Trader drawers unchanged.
+- Live-proof the aggregates track: ra book moved 2→3 trades mid-session
+  (−422.28→−674.66 realized, 70→100 commission, net −774.66 = exact).
+
+- The five trading boxes (Realized/Unrealized/Net/Trades/Win rate) showed
+  the admin's personal zeros; now they aggregate across users the admin
+  created (`clientStats`: same definitions incl. commission in net).
+  Traders unchanged (own stats).
+- Verified live: bullsx-admin → realized −96.53, 1 trade, 0W/1L;
+  ra7679 → realized −422.28, net −492.28, 2 trades, 1W/1L.
+
+- ClientDrawer shows a Granted to clients box for admin roles only: net
+  signed DEPOSIT/WITHDRAWAL flow across accounts of users they created
+  (null for traders → box hidden). Additive API field, existing scoping.
+- Verified live: ra7679 = ₹40,000 (10k + 30k), trader = null.
+
+---
+
+## 2026-10-23 — Tenant summary aggregates silently read 0 (wrong FK key)
+
+- Caught by the new drill-down tie-out: tenant card showed realized 0 /
+  commission 0 while its rows summed −96.53 / 80. Root cause: the summary
+  spread an `id`-keyed account filter into position/ledger queries (whose
+  key is `accountId`) — matching nothing, forever. Every other route
+  already used `accountId`; only the summary was wrong.
+- Fixed with a dedicated `txScope`; verified tenant rows == cards exactly
+  (−96.53 / 80). Super was unaffected (unrestricted scope).
+
+---
+
+## 2026-10-23 — P&L / brokerage drill-downs (both roles, scoped)
+
+- Overview Realized P&L and Brokerage cards click through to per-profile
+  breakdown tables (P&L sorted losses-first with a totals row; brokerage
+  sorted fees-first). Tenant sees only own clients via the existing users
+  endpoint — zero new API surface, zero new access logic.
+
+## 2026-10-23 — Overview shows whose money is whose (both roles)
+
+- Replaced the ambiguous platform-wide "Total balance" card with My balance
+  (actor's own account) + Held by others (combined − mine) + Combined total.
+  Pure UI composition from session + existing summary; no API change.
+- Verified tenant summary scoping is clean (own-created + self only —
+  super's balance never leaks into tenant totals; tenant sees 4 users).
+- "+ Add balance" confirmed super-gated already; tenant self top-up stays
+  403 by the hierarchy rule.
+- Live: super 75L + 24,99,823.47 = 99,99,823.47; tenant 20L + 4,99,823.47
+  scoped. Sums exact both roles.
+
+---
+
+## 2026-10-23 — Single port: everything browser-facing on :3000
+
+- `apps/web/relay.js`: :3000 relays HTTP (pages, /api, HMR) to untouched
+  Next on :3001 and `/ws` upgrades to the gateway :8080 (node:http +
+  node:net only, Host header preserved for tenant resolution). `dev`/`start`
+  scripts run it; removed `NEXT_PUBLIC_WS_URL` so browsers use same-origin
+  `/ws` (works on LAN and tunnel alike).
+- Verified: page 200, `/api/health` ok, `/ws` handshake 101, HMR path 101.
+
+---
+
+## 2026-10-23 — Fresh hierarchy test: wiped slate, ₹1cr cascade verified
+
+- Clean slate: fresh pg_dump backup, then truncated ledger/positions/orders/
+  notifications/alerts/sessions + zeroed all non-house balances (users,
+  instruments, rules, tenants, audit kept). 0 open, 0 pending beforehand.
+- Super self-seeded exactly ₹1,00,00,000 → tenant ₹25,00,000 (super 75L,
+  sum conserved) → trader ₹5,00,000 (tenant 20L, sum conserved).
+- Isolation proven: tenant lists only own-created IDs (3 users, 0 foreign);
+  funding a super-created user → 403; ₹100M overdraft on ₹20L → 422.
+- Live 1-lot crude on fresh state: margin ₹9,653.97 exact, history qty=1,
+  realized −₹96.53 exact, commission ₹80.00 (40+40 per-lot override path).
+
+---
+
+## 2026-10-23 — Hierarchical funding: money moves, never materializes
+
+- `POST /admin/ledger/adjust` is now a transfer: the grant moves out of the
+  actor's own account in the same serializable transaction (both legs share
+  the existing DEPOSIT/WITHDRAWAL/ADJUSTMENT type, memos name the counterparty,
+  aggregates untouched). Overdrafts reject 422 INSUFFICIENT_FUNDS.
+- Only from-air path left: super-admin topping up their OWN account
+  (human-manual); tenant self top-ups 403.
+- `POST /admin/users` startingBalance funds from the creator (fail-fast cap
+  check before creating, single-tx both legs).
+- Fund modal shows the actor's available; test fixtures restored exactly.
+- Verified live: tenant ₹100k grant (both sides exact), ₹999M overdraft
+  blocked, tenant self top-up 403, super self +5000 free, create-user −10000
+  from creator, symmetric withdrawal restores both sides.
 
 ---
 
@@ -148,6 +246,12 @@ Newest session first.
   gateway needs `go run ./cmd/gateway` with the Binance env; API runs in its
   terminal as before. Backups: `D:\realbulls-infra-dump.sql`,
   `C:\Users\anura\AppData\Local\Temp\opencode\kite-token.txt`.
+- Reboot routine (2026-10-23): everything native needs a start —
+  `D:\realbulls-infra\start-infra.ps1` does Postgres (if down) + the
+  prebuilt `apps/ws-gateway/gateway.exe` (no recompile) + status check.
+  Memurai auto-starts (service); API + web run in their terminals.
+  "Connecting…" banner in the terminal = gateway down (ticks still flow
+  via API+bridge; WS only carries push).
 
 ---
 
