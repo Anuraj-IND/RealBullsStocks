@@ -65,7 +65,7 @@ if ($LASTEXITCODE -ne 0) { throw "Failed to transfer and load images on Droplet"
 # 4. Sync configuration files and source to Droplet
 Write-Host "`n[3/5] Syncing infra config and workspace files..." -ForegroundColor Green
 
-ssh -o StrictHostKeyChecking=no "$DeployUser@$DropletIp" "mkdir -p /opt/realbulls/infra"
+ssh -n -o StrictHostKeyChecking=no "$DeployUser@$DropletIp" "mkdir -p /opt/realbulls/infra"
 scp -o StrictHostKeyChecking=no infra/docker-compose.yml infra/Caddyfile "$DeployUser@$DropletIp`:/opt/realbulls/infra/"
 
 # Package repository source needed for Prisma migration & seed scripts
@@ -77,7 +77,7 @@ tar --exclude=node_modules --exclude=.next --exclude=.turbo --exclude=generated 
 scp -o StrictHostKeyChecking=no $tempArchive "$DeployUser@$DropletIp`:/opt/realbulls/src.tar.gz"
 Remove-Item $tempArchive -Force -ErrorAction SilentlyContinue
 
-ssh -o StrictHostKeyChecking=no "$DeployUser@$DropletIp" "tar -xzf /opt/realbulls/src.tar.gz -C /opt/realbulls && rm -f /opt/realbulls/src.tar.gz"
+ssh -n -o StrictHostKeyChecking=no "$DeployUser@$DropletIp" "tar -xzf /opt/realbulls/src.tar.gz -C /opt/realbulls && rm -f /opt/realbulls/src.tar.gz"
 
 # 5. Execute DB push and start stack on Droplet
 Write-Host "`n[4/5] Starting database & synchronizing schema..." -ForegroundColor Green
@@ -131,7 +131,7 @@ if [ "${BOOTSTRAP:-false}" = "true" ]; then
 fi
 
 # Start remaining containers
-docker compose up -d --no-build --remove-orphans
+docker compose up -d --force-recreate --no-build --remove-orphans
 docker compose ps
 '@
 
